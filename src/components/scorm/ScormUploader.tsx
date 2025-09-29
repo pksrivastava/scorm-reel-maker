@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Upload, FileText, AlertCircle } from "lucide-react";
 import JSZip from "jszip";
-import { parseString } from "xml2js";
+import { XMLParser } from "fast-xml-parser";
 
 interface ScormUploaderProps {
   onPackageLoad: (packageData: any) => void;
@@ -19,63 +19,55 @@ const ScormUploader = ({ onPackageLoad }: ScormUploaderProps) => {
   const parseManifest = (manifestXml: string): Promise<any> => {
     return new Promise((resolve, reject) => {
       try {
-        parseString(manifestXml, { 
-          explicitArray: false,
-          trim: true,
-          normalize: true,
-          async: false
-        }, (err, result) => {
-          if (err) {
-            reject(new Error(`Failed to parse manifest: ${err.message}`));
-            return;
-          }
-          
-          try {
-            const manifest = result.manifest;
-            const organizations = manifest.organizations?.organization;
-            const resources = manifest.resources?.resource || [];
-            
-            const packageData = {
-              title: organizations?.title || 'SCORM Package',
-              identifier: manifest.$?.identifier || manifest.identifier,
-              version: manifest.$?.version || manifest.version || '1.2',
-              scos: [],
-              resources: {}
+        const parser = new XMLParser({
+          ignoreAttributes: false,
+          attributeNamePrefix: '',
+          trimValues: true,
+          allowBooleanAttributes: true,
+          removeNSPrefix: true,
+        });
+
+        const result = parser.parse(manifestXml);
+        const manifest = result.manifest || result;
+        const organizations = manifest.organizations?.organization;
+        const resources = manifest.resources?.resource || [];
+
+        const packageData: any = {
+          title: organizations?.title || 'SCORM Package',
+          identifier: manifest.identifier,
+          version: manifest.version || '1.2',
+          scos: [],
+          resources: {},
+        };
+
+        // Parse SCOs from organization items
+        if (organizations?.item) {
+          const items = Array.isArray(organizations.item) ? organizations.item : [organizations.item];
+          packageData.scos = items.map((item: any, index: number) => ({
+            id: item.identifier || `item_${index}`,
+            title: item.title || `Item ${index + 1}`,
+            identifierref: item.identifierref,
+            index,
+          }));
+        }
+
+        // Parse resources
+        const resourceArray = Array.isArray(resources) ? resources : [resources];
+        resourceArray.forEach((resource: any) => {
+          if (!resource) return;
+          const identifier = resource.identifier;
+          if (identifier) {
+            packageData.resources[identifier] = {
+              href: resource.href,
+              type: resource.type,
+              scormType: resource.scormtype || resource.scormType,
             };
-
-            // Parse SCOs from organization items
-            if (organizations?.item) {
-              const items = Array.isArray(organizations.item) ? organizations.item : [organizations.item];
-              packageData.scos = items.map((item: any, index: number) => ({
-                id: item.$?.identifier || item.identifier || `item_${index}`,
-                title: item.title || `Item ${index + 1}`,
-                identifierref: item.$?.identifierref || item.identifierref,
-                index
-              }));
-            }
-
-            // Parse resources
-            const resourceArray = Array.isArray(resources) ? resources : [resources];
-            resourceArray.forEach((resource: any) => {
-              if (resource) {
-                const identifier = resource.$?.identifier || resource.identifier;
-                if (identifier) {
-                  packageData.resources[identifier] = {
-                    href: resource.$?.href || resource.href,
-                    type: resource.$?.type || resource.type,
-                    scormType: resource.$?.['adlcp:scormtype'] || resource.$?.scormtype || resource['adlcp:scormtype'] || resource.scormtype
-                  };
-                }
-              }
-            });
-
-            resolve(packageData);
-          } catch (parseErr) {
-            reject(new Error(`Failed to process manifest structure: ${parseErr instanceof Error ? parseErr.message : 'Unknown error'}`));
           }
         });
+
+        resolve(packageData);
       } catch (err) {
-        reject(new Error(`Failed to initialize XML parser: ${err instanceof Error ? err.message : 'Unknown error'}`));
+        reject(new Error(`Failed to parse manifest: ${err instanceof Error ? err.message : 'Unknown error'}`));
       }
     });
   };
