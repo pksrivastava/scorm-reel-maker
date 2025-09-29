@@ -18,49 +18,65 @@ const ScormUploader = ({ onPackageLoad }: ScormUploaderProps) => {
 
   const parseManifest = (manifestXml: string): Promise<any> => {
     return new Promise((resolve, reject) => {
-      parseString(manifestXml, (err, result) => {
-        if (err) {
-          reject(err);
-          return;
-        }
-        
-        try {
-          const manifest = result.manifest;
-          const organizations = manifest.organizations?.[0]?.organization?.[0];
-          const resources = manifest.resources?.[0]?.resource || [];
-          
-          const packageData = {
-            title: organizations?.title?.[0] || 'SCORM Package',
-            identifier: manifest.$?.identifier,
-            version: manifest.$?.version || '1.2',
-            scos: [],
-            resources: {}
-          };
-
-          // Parse SCOs from organization items
-          if (organizations?.item) {
-            packageData.scos = organizations.item.map((item: any, index: number) => ({
-              id: item.$?.identifier,
-              title: item.title?.[0] || `Item ${index + 1}`,
-              identifierref: item.$?.identifierref,
-              index
-            }));
+      try {
+        parseString(manifestXml, { 
+          explicitArray: false,
+          trim: true,
+          normalize: true,
+          async: false
+        }, (err, result) => {
+          if (err) {
+            reject(new Error(`Failed to parse manifest: ${err.message}`));
+            return;
           }
-
-          // Parse resources
-          resources.forEach((resource: any) => {
-            packageData.resources[resource.$?.identifier] = {
-              href: resource.$?.href,
-              type: resource.$?.type,
-              scormType: resource.$?.['adlcp:scormtype'] || resource.$?.scormtype
+          
+          try {
+            const manifest = result.manifest;
+            const organizations = manifest.organizations?.organization;
+            const resources = manifest.resources?.resource || [];
+            
+            const packageData = {
+              title: organizations?.title || 'SCORM Package',
+              identifier: manifest.$?.identifier || manifest.identifier,
+              version: manifest.$?.version || manifest.version || '1.2',
+              scos: [],
+              resources: {}
             };
-          });
 
-          resolve(packageData);
-        } catch (parseErr) {
-          reject(parseErr);
-        }
-      });
+            // Parse SCOs from organization items
+            if (organizations?.item) {
+              const items = Array.isArray(organizations.item) ? organizations.item : [organizations.item];
+              packageData.scos = items.map((item: any, index: number) => ({
+                id: item.$?.identifier || item.identifier || `item_${index}`,
+                title: item.title || `Item ${index + 1}`,
+                identifierref: item.$?.identifierref || item.identifierref,
+                index
+              }));
+            }
+
+            // Parse resources
+            const resourceArray = Array.isArray(resources) ? resources : [resources];
+            resourceArray.forEach((resource: any) => {
+              if (resource) {
+                const identifier = resource.$?.identifier || resource.identifier;
+                if (identifier) {
+                  packageData.resources[identifier] = {
+                    href: resource.$?.href || resource.href,
+                    type: resource.$?.type || resource.type,
+                    scormType: resource.$?.['adlcp:scormtype'] || resource.$?.scormtype || resource['adlcp:scormtype'] || resource.scormtype
+                  };
+                }
+              }
+            });
+
+            resolve(packageData);
+          } catch (parseErr) {
+            reject(new Error(`Failed to process manifest structure: ${parseErr instanceof Error ? parseErr.message : 'Unknown error'}`));
+          }
+        });
+      } catch (err) {
+        reject(new Error(`Failed to initialize XML parser: ${err instanceof Error ? err.message : 'Unknown error'}`));
+      }
     });
   };
 
