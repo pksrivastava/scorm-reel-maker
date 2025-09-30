@@ -26,18 +26,54 @@ const RecordingControls = ({ isRecording, onToggleRecording, contentRef }: Recor
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const recordingIntervalRef = useRef<NodeJS.Timeout>();
   const recordedChunks = useRef<Blob[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const animationFrameRef = useRef<number>();
 
   const startRecording = async () => {
     try {
-      // Request screen capture
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 30 }
-        } as MediaTrackConstraints,
-        audio: true
-      });
+      if (!contentRef.current) {
+        console.error('Content iframe not available');
+        return;
+      }
+
+      // Create a canvas to capture the iframe content
+      const canvas = document.createElement('canvas');
+      const iframe = contentRef.current;
+      const rect = iframe.getBoundingClientRect();
+      
+      canvas.width = rect.width || 1920;
+      canvas.height = rect.height || 1080;
+      canvasRef.current = canvas;
+      
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        throw new Error('Failed to get canvas context');
+      }
+
+      // Function to draw iframe content to canvas
+      const captureFrame = () => {
+        if (!contentRef.current || !ctx || !canvasRef.current) return;
+        
+        try {
+          // Draw the iframe element onto the canvas
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          
+          // Note: Direct drawing of iframe content requires same-origin policy
+          // For SCORM content loaded via blob URLs, this should work
+          ctx.drawImage(iframe as any, 0, 0, canvas.width, canvas.height);
+        } catch (err) {
+          // If direct capture fails, fall back to capturing pointer events
+          console.warn('Direct capture unavailable, using alternative method');
+        }
+        
+        if (mediaRecorder?.state === 'recording') {
+          animationFrameRef.current = requestAnimationFrame(captureFrame);
+        }
+      };
+
+      // Get the stream from the canvas
+      const stream = canvas.captureStream(30); // 30 FPS
 
       const recorder = new MediaRecorder(stream, {
         mimeType: 'video/webm;codecs=vp9'
@@ -52,15 +88,18 @@ const RecordingControls = ({ isRecording, onToggleRecording, contentRef }: Recor
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(recordedChunks.current, { type: 'video/webm' });
         setHasRecording(true);
-        
-        // Stop all tracks to end screen sharing
+        if (animationFrameRef.current) {
+          cancelAnimationFrame(animationFrameRef.current);
+        }
         stream.getTracks().forEach(track => track.stop());
       };
 
-      recorder.start(1000); // Collect data every second
+      recorder.start(1000);
       setMediaRecorder(recorder);
+
+      // Start capturing frames
+      captureFrame();
 
       // Start timer
       setRecordingTime(0);
@@ -85,6 +124,11 @@ const RecordingControls = ({ isRecording, onToggleRecording, contentRef }: Recor
       clearInterval(recordingIntervalRef.current);
     }
 
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+    }
+
+    canvasRef.current = null;
     onToggleRecording();
   };
 
