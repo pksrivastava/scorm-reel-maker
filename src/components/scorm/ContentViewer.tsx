@@ -238,7 +238,8 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
               src={contentUrl}
               className="w-full h-full border-0"
               onLoad={handleIframeLoad}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"
+              allow="autoplay; fullscreen; picture-in-picture"
             />
           )}
         </div>
