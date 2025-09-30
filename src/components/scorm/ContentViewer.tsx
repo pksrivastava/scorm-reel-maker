@@ -24,11 +24,18 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
     const [error, setError] = useState<string | null>(null);
     const [contentUrl, setContentUrl] = useState<string | null>(null);
     const iframeRef = useRef<HTMLIFrameElement>(null);
+    const blobUrlsRef = useRef<string[]>([]);
 
     useImperativeHandle(ref, () => iframeRef.current!);
 
     useEffect(() => {
       loadScormContent();
+      
+      // Cleanup blob URLs on unmount
+      return () => {
+        blobUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+        blobUrlsRef.current = [];
+      };
     }, [scormPackage, currentSco]);
 
     const loadScormContent = async () => {
@@ -45,19 +52,71 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
           throw new Error('Content file not found for this SCO');
         }
 
-        // Get the content file from zip
-        const file = scormPackage.zipContent.file(resource.href);
-        if (!file) {
-          throw new Error(`File not found: ${resource.href}`);
+        // Clean up previous blob URLs
+        blobUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
+        blobUrlsRef.current = [];
+
+        const zipContent = scormPackage.zipContent;
+        
+        // Get the directory of the main HTML file
+        const resourcePath = resource.href;
+        const resourceDir = resourcePath.includes('/') 
+          ? resourcePath.substring(0, resourcePath.lastIndexOf('/') + 1)
+          : '';
+
+        // Get the main HTML file
+        const mainFile = zipContent.file(resourcePath);
+        if (!mainFile) {
+          throw new Error(`File not found: ${resourcePath}`);
         }
 
-        const content = await file.async('text');
+        let htmlContent = await mainFile.async('text');
+
+        // Get all files in the same directory and subdirectories
+        const allFiles = Object.keys(zipContent.files).filter(
+          (fileName: string) => fileName.startsWith(resourceDir) && !zipContent.files[fileName].dir
+        );
+
+        // Create blob URLs for all assets and build a URL map
+        const urlMap: { [key: string]: string } = {};
         
-        // Create a blob URL for the content
-        const blob = new Blob([content], { type: 'text/html' });
-        const url = URL.createObjectURL(blob);
+        for (const fileName of allFiles) {
+          if (fileName === resourcePath) continue; // Skip main HTML
+          
+          const file = zipContent.file(fileName);
+          if (!file) continue;
+
+          const blob = await file.async('blob');
+          const blobUrl = URL.createObjectURL(blob);
+          blobUrlsRef.current.push(blobUrl);
+          
+          // Map relative path to blob URL
+          const relativePath = fileName.replace(resourceDir, '');
+          urlMap[relativePath] = blobUrl;
+          urlMap[fileName] = blobUrl;
+        }
+
+        // Replace all relative URLs in HTML with blob URLs
+        Object.keys(urlMap).forEach(path => {
+          const patterns = [
+            new RegExp(`src=["']${path}["']`, 'gi'),
+            new RegExp(`href=["']${path}["']`, 'gi'),
+            new RegExp(`url\\(["']?${path}["']?\\)`, 'gi'),
+          ];
+          
+          patterns.forEach(pattern => {
+            htmlContent = htmlContent.replace(pattern, (match) => {
+              return match.replace(path, urlMap[path]);
+            });
+          });
+        });
+
+        // Create blob for modified HTML
+        const htmlBlob = new Blob([htmlContent], { type: 'text/html' });
+        const htmlUrl = URL.createObjectURL(htmlBlob);
+        blobUrlsRef.current.push(htmlUrl);
         
-        setContentUrl(url);
+        setContentUrl(htmlUrl);
         setIsLoading(false);
 
       } catch (err) {
