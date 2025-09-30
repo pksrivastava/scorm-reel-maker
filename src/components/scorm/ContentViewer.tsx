@@ -15,10 +15,11 @@ interface ContentViewerProps {
   scormPackage: any;
   currentSco: number;
   onProgressUpdate: (progress: number) => void;
+  onBack?: () => void;
 }
 
 const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
-  ({ scormPackage, currentSco, onProgressUpdate }, ref) => {
+  ({ scormPackage, currentSco, onProgressUpdate, onBack }, ref) => {
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -39,7 +40,10 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
     }, [scormPackage, currentSco]);
 
     const loadScormContent = async () => {
-      if (!scormPackage?.scos?.[currentSco]) return;
+      if (!scormPackage?.scos?.[currentSco]) {
+        console.log('No SCORM package or SCO available', { scormPackage, currentSco });
+        return;
+      }
 
       setIsLoading(true);
       setError(null);
@@ -47,6 +51,8 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
       try {
         const sco = scormPackage.scos[currentSco];
         const resource = scormPackage.resources[sco.identifierref];
+        
+        console.log('Loading SCO:', { sco, resource });
         
         if (!resource?.href) {
           throw new Error('Content file not found for this SCO');
@@ -58,8 +64,14 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
 
         const zipContent = scormPackage.zipContent;
         
+        if (!zipContent) {
+          throw new Error('ZIP content not available');
+        }
+        
         // Get the directory of the main HTML file
         const resourcePath = resource.href;
+        console.log('Resource path:', resourcePath);
+        
         const resourceDir = resourcePath.includes('/') 
           ? resourcePath.substring(0, resourcePath.lastIndexOf('/') + 1)
           : '';
@@ -67,6 +79,8 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
         // Get the main HTML file
         const mainFile = zipContent.file(resourcePath);
         if (!mainFile) {
+          console.error('Main file not found:', resourcePath);
+          console.log('Available files:', Object.keys(zipContent.files));
           throw new Error(`File not found: ${resourcePath}`);
         }
 
@@ -76,6 +90,8 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
         const allFiles = Object.keys(zipContent.files).filter(
           (fileName: string) => fileName.startsWith(resourceDir) && !zipContent.files[fileName].dir
         );
+
+        console.log('Processing files:', allFiles.length);
 
         // Create blob URLs for all assets and build a URL map
         const urlMap: { [key: string]: string } = {};
@@ -96,12 +112,14 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
           urlMap[fileName] = blobUrl;
         }
 
+        console.log('Created URL map with', Object.keys(urlMap).length, 'entries');
+
         // Replace all relative URLs in HTML with blob URLs
         Object.keys(urlMap).forEach(path => {
           const patterns = [
-            new RegExp(`src=["']${path}["']`, 'gi'),
-            new RegExp(`href=["']${path}["']`, 'gi'),
-            new RegExp(`url\\(["']?${path}["']?\\)`, 'gi'),
+            new RegExp(`src=["']${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'gi'),
+            new RegExp(`href=["']${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'gi'),
+            new RegExp(`url\\(["']?${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']?\\)`, 'gi'),
           ];
           
           patterns.forEach(pattern => {
@@ -116,10 +134,12 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
         const htmlUrl = URL.createObjectURL(htmlBlob);
         blobUrlsRef.current.push(htmlUrl);
         
+        console.log('Content URL created:', htmlUrl);
         setContentUrl(htmlUrl);
         setIsLoading(false);
 
       } catch (err) {
+        console.error('Error loading SCORM content:', err);
         setError(err instanceof Error ? err.message : 'Failed to load content');
         setIsLoading(false);
       }
@@ -184,6 +204,12 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
           <div className="flex items-center gap-3">
+            {onBack && (
+              <Button variant="ghost" size="sm" onClick={onBack}>
+                <RotateCcw className="w-4 h-4 mr-2" />
+                Back
+              </Button>
+            )}
             <Badge variant="outline" className="text-xs">
               SCO {currentSco + 1}
             </Badge>
