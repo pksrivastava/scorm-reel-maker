@@ -62,6 +62,21 @@ const ScormPlayer = () => {
               </p>
             </div>
             <div className="flex gap-3">
+              {scormPackage && (
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => {
+                    setScormPackage(null);
+                    setCurrentSco(0);
+                    setProgress(0);
+                    setCompletionStatus('incomplete');
+                  }}
+                >
+                  <Upload className="w-4 h-4 mr-2" />
+                  New Package
+                </Button>
+              )}
               <Button variant="outline" size="sm">
                 <Settings className="w-4 h-4 mr-2" />
                 Settings
