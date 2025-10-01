@@ -1,4 +1,4 @@
-import { useState, useEffect, forwardRef, useImperativeHandle, useRef, useCallback } from "react";
+import { useState, useEffect, forwardRef, useImperativeHandle, useRef } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,29 +25,44 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
     const [error, setError] = useState<string | null>(null);
     const [contentUrl, setContentUrl] = useState<string | null>(null);
     const iframeRef = useRef<HTMLIFrameElement>(null);
-    const blobUrlsRef = useRef<string[]>([]);
-    const zipContentRef = useRef<any>(null);
-    const resourceDirRef = useRef<string>('');
-    const resourcePathRef = useRef<string>('');
-    const assetUrlMapRef = useRef<{ [key: string]: string }>({});
-    const htmlFilesRef = useRef<string[]>([]);
-    const navListenerAttachedRef = useRef<boolean>(false);
+    const swRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
 
     useImperativeHandle(ref, () => iframeRef.current!);
 
     useEffect(() => {
-      loadScormContent();
-      
-      // Cleanup blob URLs on unmount
+      registerServiceWorker();
       return () => {
-        blobUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
-        blobUrlsRef.current = [];
+        // Cleanup service worker on unmount
+        if (swRegistrationRef.current) {
+          swRegistrationRef.current.active?.postMessage({ type: 'CLEAR_SCORM' });
+        }
       };
+    }, []);
+
+    useEffect(() => {
+      if (swRegistrationRef.current) {
+        loadScormContent();
+      }
     }, [scormPackage, currentSco]);
+
+    const registerServiceWorker = async () => {
+      try {
+        if ('serviceWorker' in navigator) {
+          const registration = await navigator.serviceWorker.register('/scorm-sw.js');
+          swRegistrationRef.current = registration;
+          
+          // Wait for the service worker to be ready
+          await navigator.serviceWorker.ready;
+          console.log('Service Worker registered and ready');
+        }
+      } catch (error) {
+        console.error('Service Worker registration failed:', error);
+        setError('Failed to initialize SCORM player');
+      }
+    };
 
     const loadScormContent = async () => {
       if (!scormPackage?.scos?.[currentSco]) {
-        console.log('No SCORM package or SCO available', { scormPackage, currentSco });
         return;
       }
 
@@ -58,90 +73,51 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
         const sco = scormPackage.scos[currentSco];
         const resource = scormPackage.resources[sco.identifierref];
         
-        console.log('Loading SCO:', { sco, resource });
-        
         if (!resource?.href) {
           throw new Error('Content file not found for this SCO');
         }
 
-        // Clean up previous blob URLs
-        blobUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
-        blobUrlsRef.current = [];
-
         const zipContent = scormPackage.zipContent;
-        
         if (!zipContent) {
           throw new Error('ZIP content not available');
         }
         
-        // Get the directory of the main HTML file
         const resourcePath = resource.href;
-        console.log('Resource path:', resourcePath);
-        
         const resourceDir = resourcePath.includes('/') 
           ? resourcePath.substring(0, resourcePath.lastIndexOf('/') + 1)
           : '';
 
-        // Get the main HTML file
-        const mainFile = zipContent.file(resourcePath);
-        if (!mainFile) {
-          console.error('Main file not found:', resourcePath);
-          console.log('Available files:', Object.keys(zipContent.files));
-          throw new Error(`File not found: ${resourcePath}`);
-        }
-
-        let htmlContent = await mainFile.async('text');
-
-        // Get all files in the same directory and subdirectories
+        // Collect all files and convert to blobs
+        const fileMap = new Map();
         const allFiles = Object.keys(zipContent.files).filter(
-          (fileName: string) => fileName.startsWith(resourceDir) && !zipContent.files[fileName].dir
+          (fileName: string) => !zipContent.files[fileName].dir
         );
 
-        console.log('Processing files:', allFiles.length);
-
-        // Create blob URLs for all assets and build a URL map
-        const urlMap: { [key: string]: string } = {};
-        
         for (const fileName of allFiles) {
-          if (fileName === resourcePath) continue; // Skip main HTML
-          
           const file = zipContent.file(fileName);
           if (!file) continue;
 
           const blob = await file.async('blob');
-          const blobUrl = URL.createObjectURL(blob);
-          blobUrlsRef.current.push(blobUrl);
-          
-          // Map relative path to blob URL
-          const relativePath = fileName.replace(resourceDir, '');
-          urlMap[relativePath] = blobUrl;
-          urlMap[fileName] = blobUrl;
+          const arrayBuffer = await blob.arrayBuffer();
+          fileMap.set(fileName, arrayBuffer);
         }
 
-        console.log('Created URL map with', Object.keys(urlMap).length, 'entries');
-
-        // Replace all relative URLs in HTML with blob URLs
-        Object.keys(urlMap).forEach(path => {
-          const patterns = [
-            new RegExp(`src=["']${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'gi'),
-            new RegExp(`href=["']${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'gi'),
-            new RegExp(`url\\(["']?${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']?\\)`, 'gi'),
-          ];
-          
-          patterns.forEach(pattern => {
-            htmlContent = htmlContent.replace(pattern, (match) => {
-              return match.replace(path, urlMap[path]);
-            });
+        // Send files to service worker
+        if (swRegistrationRef.current?.active) {
+          swRegistrationRef.current.active.postMessage({
+            type: 'INIT_SCORM',
+            files: Array.from(fileMap.entries()),
+            baseUrl: resourceDir
           });
-        });
+        }
 
-        // Create blob for modified HTML
-        const htmlBlob = new Blob([htmlContent], { type: 'text/html' });
-        const htmlUrl = URL.createObjectURL(htmlBlob);
-        blobUrlsRef.current.push(htmlUrl);
-        
-        console.log('Content URL created:', htmlUrl);
-        setContentUrl(htmlUrl);
+        // Wait a bit for SW to process
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Set the content URL to use the service worker
+        const swUrl = `/scorm-content/${resourcePath}`;
+        console.log('Loading SCORM content from:', swUrl);
+        setContentUrl(swUrl);
         setIsLoading(false);
 
       } catch (err) {
