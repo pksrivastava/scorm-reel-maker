@@ -1,4 +1,4 @@
-import { useState, useEffect, forwardRef, useImperativeHandle, useRef } from "react";
+import { useState, useEffect, forwardRef, useImperativeHandle, useRef, useCallback } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +26,12 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
     const [contentUrl, setContentUrl] = useState<string | null>(null);
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const blobUrlsRef = useRef<string[]>([]);
+    const zipContentRef = useRef<any>(null);
+    const resourceDirRef = useRef<string>('');
+    const resourcePathRef = useRef<string>('');
+    const assetUrlMapRef = useRef<{ [key: string]: string }>({});
+    const htmlFilesRef = useRef<string[]>([]);
+    const navListenerAttachedRef = useRef<boolean>(false);
 
     useImperativeHandle(ref, () => iframeRef.current!);
 
