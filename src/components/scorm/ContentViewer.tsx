@@ -222,7 +222,12 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
             <Button variant="ghost" size="sm" onClick={handleRefresh}>
               <RotateCcw className="w-4 h-4" />
             </Button>
-            <Button variant="ghost" size="sm">
+            <Button 
+              variant="ghost" 
+              size="sm"
+              onClick={() => contentUrl && window.open(contentUrl, '_blank')}
+              disabled={!contentUrl}
+            >
               <ExternalLink className="w-4 h-4" />
             </Button>
             <Button variant="ghost" size="sm" onClick={handleFullscreen}>

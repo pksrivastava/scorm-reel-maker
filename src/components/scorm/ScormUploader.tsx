@@ -16,6 +16,36 @@ const ScormUploader = ({ onPackageLoad }: ScormUploaderProps) => {
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
 
+  const createMockZipFromFiles = (files: File[]): any => {
+    // Create a mock JSZip-like structure from folder files
+    const mockZip: any = {
+      files: {},
+      file: (path: string) => {
+        const normalizedPath = path.replace(/^\//, '');
+        const file = files.find(f => f.webkitRelativePath.replace(/^[^/]+\//, '') === normalizedPath);
+        if (!file) return null;
+        return {
+          async: (type: string) => {
+            if (type === 'text') return file.text();
+            if (type === 'blob') return file;
+            return file;
+          }
+        };
+      }
+    };
+
+    // Populate files object
+    files.forEach(file => {
+      const relativePath = file.webkitRelativePath.replace(/^[^/]+\//, '');
+      mockZip.files[relativePath] = {
+        name: relativePath,
+        dir: false
+      };
+    });
+
+    return mockZip;
+  };
+
   const parseManifest = (manifestXml: string): Promise<any> => {
     return new Promise((resolve, reject) => {
       try {
@@ -119,6 +149,48 @@ const ScormUploader = ({ onPackageLoad }: ScormUploaderProps) => {
     }
   };
 
+  const handleFolderUpload = async (files: FileList) => {
+    setIsLoading(true);
+    setError(null);
+    setUploadProgress(0);
+
+    try {
+      const fileArray = Array.from(files);
+      
+      // Find imsmanifest.xml
+      const manifestFile = fileArray.find(f => 
+        f.webkitRelativePath.endsWith('imsmanifest.xml')
+      );
+
+      if (!manifestFile) {
+        throw new Error('imsmanifest.xml not found. This may not be a valid SCORM package.');
+      }
+
+      setUploadProgress(25);
+
+      const manifestXml = await manifestFile.text();
+      const packageData = await parseManifest(manifestXml);
+
+      setUploadProgress(50);
+
+      // Create mock zip structure from folder files
+      packageData.zipContent = createMockZipFromFiles(fileArray);
+
+      setUploadProgress(100);
+      
+      setTimeout(() => {
+        onPackageLoad(packageData);
+        setIsLoading(false);
+        setUploadProgress(0);
+      }, 500);
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to process SCORM folder');
+      setIsLoading(false);
+      setUploadProgress(0);
+    }
+  };
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(true);
@@ -140,8 +212,13 @@ const ScormUploader = ({ onPackageLoad }: ScormUploaderProps) => {
   }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length > 0) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    // Check if it's a folder upload (webkitdirectory)
+    if (files[0].webkitRelativePath) {
+      handleFolderUpload(files);
+    } else {
       handleFileUpload(files[0]);
     }
   };
@@ -208,14 +285,28 @@ const ScormUploader = ({ onPackageLoad }: ScormUploaderProps) => {
           </div>
         )}
 
-        <div className="flex justify-center">
+        <div className="flex justify-center gap-3">
           <Button 
             variant="outline" 
             onClick={() => (document.querySelector('input[type="file"]') as HTMLInputElement)?.click()}
             disabled={isLoading}
           >
             <Upload className="w-4 h-4 mr-2" />
-            Browse Files
+            Browse ZIP File
+          </Button>
+          <Button 
+            variant="outline" 
+            onClick={() => {
+              const input = document.createElement('input');
+              input.type = 'file';
+              input.webkitdirectory = true;
+              input.onchange = (e) => handleFileSelect(e as any);
+              input.click();
+            }}
+            disabled={isLoading}
+          >
+            <Upload className="w-4 h-4 mr-2" />
+            Upload Folder
           </Button>
         </div>
       </div>
