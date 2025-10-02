@@ -24,10 +24,11 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [contentUrl, setContentUrl] = useState<string | null>(null);
-    const iframeRef = useRef<HTMLIFrameElement>(null);
-    const swRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
+const iframeRef = useRef<HTMLIFrameElement>(null);
+const swRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
+const [swReady, setSwReady] = useState(false);
 
-    useImperativeHandle(ref, () => iframeRef.current!);
+useImperativeHandle(ref, () => iframeRef.current!);
 
     useEffect(() => {
       registerServiceWorker();
@@ -39,21 +40,21 @@ const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
       };
     }, []);
 
-    useEffect(() => {
-      if (swRegistrationRef.current) {
-        loadScormContent();
-      }
-    }, [scormPackage, currentSco]);
+useEffect(() => {
+  if (swReady) {
+    loadScormContent();
+  }
+}, [swReady, scormPackage, currentSco]);
 
     const registerServiceWorker = async () => {
       try {
         if ('serviceWorker' in navigator) {
-          const registration = await navigator.serviceWorker.register('/scorm-sw.js');
-          swRegistrationRef.current = registration;
-          
-          // Wait for the service worker to be ready
-          await navigator.serviceWorker.ready;
-          console.log('Service Worker registered and ready');
+const registration = await navigator.serviceWorker.register('/scorm-sw.js');
+// Wait for the service worker to be ready (activated and controlling the page)
+const readyRegistration = await navigator.serviceWorker.ready;
+swRegistrationRef.current = readyRegistration;
+setSwReady(true);
+console.log('Service Worker registered and ready');
         }
       } catch (error) {
         console.error('Service Worker registration failed:', error);
