@@ -46,6 +46,50 @@ useEffect(() => {
   }
 }, [swReady, scormPackage, currentSco]);
 
+// Expose SCORM API (1.2 and 2004) on parent window so SCO can find it via parent/opener
+useEffect(() => {
+  const onComplete = () => onProgressUpdate(100);
+
+  const api12 = {
+    LMSInitialize: () => "true",
+    LMSFinish: () => { onComplete(); return "true"; },
+    LMSGetValue: (_el: string) => "",
+    LMSSetValue: (el: string, val: string) => {
+      if (el === "cmi.core.lesson_status" && (val === "completed" || val === "passed")) onComplete();
+      return "true";
+    },
+    LMSCommit: () => "true",
+    LMSGetLastError: () => "0",
+    LMSGetErrorString: () => "",
+    LMSGetDiagnostic: () => ""
+  } as const;
+
+  const api2004 = {
+    Initialize: () => "true",
+    Terminate: () => { onComplete(); return "true"; },
+    GetValue: (_el: string) => "",
+    SetValue: (el: string, val: string) => {
+      if (el === "cmi.completion_status" && val === "completed") onComplete();
+      if (el === "cmi.success_status" && (val === "passed" || val === "failed")) onComplete();
+      return "true";
+    },
+    Commit: () => "true",
+    GetLastError: () => "0",
+    GetErrorString: () => "",
+    GetDiagnostic: () => ""
+  } as const;
+
+  (window as any).API = api12;
+  (window as any).API_1484_11 = api2004;
+
+  return () => {
+    try {
+      delete (window as any).API;
+      delete (window as any).API_1484_11;
+    } catch {}
+  };
+}, [onProgressUpdate]);
+
     const registerServiceWorker = async () => {
       try {
         if ('serviceWorker' in navigator) {
@@ -83,13 +127,13 @@ console.log('Service Worker registered and ready');
           throw new Error('ZIP content not available');
         }
         
-        const resourcePath = resource.href;
-        const resourceDir = resourcePath.includes('/') 
+        let resourcePath = resource.href;
+        const resourceDir = resourcePath && resourcePath.includes('/') 
           ? resourcePath.substring(0, resourcePath.lastIndexOf('/') + 1)
           : '';
 
         // Collect all files and convert to blobs
-        const fileMap = new Map();
+        const fileMap = new Map<string, ArrayBuffer>();
         const allFiles = Object.keys(zipContent.files).filter(
           (fileName: string) => !zipContent.files[fileName].dir
         );
@@ -97,10 +141,29 @@ console.log('Service Worker registered and ready');
         for (const fileName of allFiles) {
           const file = zipContent.file(fileName);
           if (!file) continue;
-
           const blob = await file.async('blob');
           const arrayBuffer = await blob.arrayBuffer();
           fileMap.set(fileName, arrayBuffer);
+        }
+
+        // Heuristic: some packages point to shared/launchpage.html; pick a real entry if so
+        const hasFile = (p: string) => !!p && fileMap.has(p);
+        const isLaunchPage = /launchpage\.html?$/i.test(resourcePath || '');
+        if (!resourcePath || !hasFile(resourcePath) || isLaunchPage) {
+          const candidates = [
+            resourceDir + 'index.html',
+            resourceDir + 'index.htm'
+          ];
+          let chosen = candidates.find(hasFile);
+          if (!chosen) {
+            // pick first html in the resource directory (excluding launchpage)
+            const htmlInDir = allFiles.filter(f => f.startsWith(resourceDir) && /\.html?$/i.test(f) && !/launchpage\.html?$/i.test(f));
+            if (htmlInDir.length) chosen = htmlInDir[0];
+          }
+          if (chosen) {
+            console.log('Adjusted SCO entry from', resourcePath, 'to', chosen);
+            resourcePath = chosen;
+          }
         }
 
         // Send files to service worker
@@ -138,46 +201,6 @@ console.log('Service Worker registered and ready');
 
     const handleIframeLoad = () => {
       setIsLoading(false);
-      
-      // Initialize SCORM API simulation
-      if (iframeRef.current?.contentWindow) {
-        try {
-          // Add SCORM API to iframe
-          const scormAPI = {
-            LMSInitialize: () => "true",
-            LMSFinish: () => {
-              onProgressUpdate(100);
-              return "true";
-            },
-            LMSGetValue: (element: string) => {
-              switch (element) {
-                case "cmi.core.lesson_status":
-                  return "incomplete";
-                case "cmi.core.student_id":
-                  return "student_001";
-                case "cmi.core.student_name":
-                  return "Demo Student";
-                default:
-                  return "";
-              }
-            },
-            LMSSetValue: (element: string, value: string) => {
-              if (element === "cmi.core.lesson_status" && value === "completed") {
-                onProgressUpdate(100);
-              }
-              return "true";
-            },
-            LMSCommit: () => "true",
-            LMSGetLastError: () => "0",
-            LMSGetErrorString: () => "",
-            LMSGetDiagnostic: () => ""
-          };
-
-          (iframeRef.current.contentWindow as any).API = scormAPI;
-        } catch (err) {
-          console.warn('Failed to inject SCORM API:', err);
-        }
-      }
     };
 
     const currentScoData = scormPackage?.scos?.[currentSco];
