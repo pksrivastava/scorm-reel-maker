@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -26,14 +26,17 @@ const ScormPlayer = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [progress, setProgress] = useState(0);
   const [completionStatus, setCompletionStatus] = useState<'incomplete' | 'completed' | 'passed' | 'failed'>('incomplete');
+  const [autoRecordTriggered, setAutoRecordTriggered] = useState(false);
   
   const contentRef = useRef<HTMLIFrameElement>(null);
+  const recordingControlsRef = useRef<{ startRecording: () => void } | null>(null);
 
   const handlePackageLoad = (packageData: any) => {
     setScormPackage(packageData);
     setCurrentSco(0);
     setProgress(0);
     setCompletionStatus('incomplete');
+    setAutoRecordTriggered(false);
   };
 
   const handleRecordingToggle = () => {
@@ -46,6 +49,19 @@ const ScormPlayer = () => {
       setCompletionStatus('completed');
     }
   };
+
+  // Auto-start recording when content is loaded
+  useEffect(() => {
+    if (scormPackage && !autoRecordTriggered && recordingControlsRef.current) {
+      // Wait a bit for content to fully load
+      const timer = setTimeout(() => {
+        recordingControlsRef.current?.startRecording();
+        setAutoRecordTriggered(true);
+      }, 2000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [scormPackage, autoRecordTriggered]);
 
   return (
     <div className="min-h-screen bg-gradient-bg">
@@ -130,6 +146,7 @@ const ScormPlayer = () => {
                   onBack={() => setScormPackage(null)}
                 />
                 <RecordingControls 
+                  ref={recordingControlsRef}
                   isRecording={isRecording}
                   onToggleRecording={handleRecordingToggle}
                   contentRef={contentRef}

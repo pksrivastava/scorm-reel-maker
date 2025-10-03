@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, forwardRef, useImperativeHandle } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +20,8 @@ interface RecordingControlsProps {
   contentRef: React.RefObject<HTMLIFrameElement>;
 }
 
-const RecordingControls = ({ isRecording, onToggleRecording, contentRef }: RecordingControlsProps) => {
+const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingControlsProps>(
+  ({ isRecording, onToggleRecording, contentRef }, ref) => {
   const [recordingTime, setRecordingTime] = useState(0);
   const [hasRecording, setHasRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
@@ -152,6 +153,11 @@ const RecordingControls = ({ isRecording, onToggleRecording, contentRef }: Recor
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Expose startRecording method to parent
+  useImperativeHandle(ref, () => ({
+    startRecording
+  }));
+
   return (
     <Card className="p-4 bg-player-controls shadow-card">
       <div className="flex items-center justify-between">
@@ -232,6 +238,8 @@ const RecordingControls = ({ isRecording, onToggleRecording, contentRef }: Recor
       )}
     </Card>
   );
-};
+});
+
+RecordingControls.displayName = 'RecordingControls';
 
 export default RecordingControls;
