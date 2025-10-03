@@ -144,6 +144,7 @@ const ScormPlayer = () => {
                   currentSco={currentSco}
                   onProgressUpdate={handleProgressUpdate}
                   onBack={() => setScormPackage(null)}
+                  isRecording={isRecording}
                 />
                 <RecordingControls 
                   ref={recordingControlsRef}

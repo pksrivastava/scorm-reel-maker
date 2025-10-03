@@ -8,7 +8,8 @@ import {
   RotateCcw, 
   ExternalLink,
   Loader2,
-  AlertTriangle
+  AlertTriangle,
+  Maximize
 } from "lucide-react";
 
 interface ContentViewerProps {
@@ -16,17 +17,21 @@ interface ContentViewerProps {
   currentSco: number;
   onProgressUpdate: (progress: number) => void;
   onBack?: () => void;
+  isRecording?: boolean;
 }
 
 const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
-  ({ scormPackage, currentSco, onProgressUpdate, onBack }, ref) => {
+  ({ scormPackage, currentSco, onProgressUpdate, onBack, isRecording = false }, ref) => {
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [contentUrl, setContentUrl] = useState<string | null>(null);
 const iframeRef = useRef<HTMLIFrameElement>(null);
 const swRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
+const containerRef = useRef<HTMLDivElement>(null);
+const autoClickIntervalRef = useRef<NodeJS.Timeout>();
 const [swReady, setSwReady] = useState(false);
+const [isFullscreenMode, setIsFullscreenMode] = useState(false);
 
 useImperativeHandle(ref, () => iframeRef.current!);
 
@@ -195,6 +200,110 @@ console.log('Service Worker registered and ready');
       setIsFullscreen(!isFullscreen);
     };
 
+    const enterFullscreen = async () => {
+      if (!containerRef.current) return;
+      
+      try {
+        if (containerRef.current.requestFullscreen) {
+          await containerRef.current.requestFullscreen();
+        }
+        setIsFullscreenMode(true);
+      } catch (error) {
+        console.error('Error entering fullscreen:', error);
+      }
+    };
+
+    const exitFullscreen = async () => {
+      try {
+        if (document.fullscreenElement) {
+          await document.exitFullscreen();
+        }
+        setIsFullscreenMode(false);
+      } catch (error) {
+        console.error('Error exiting fullscreen:', error);
+      }
+    };
+
+    // Auto-click functionality for recording
+    const autoClickElements = () => {
+      if (!iframeRef.current || !isRecording) return;
+
+      try {
+        const iframeDoc = iframeRef.current.contentDocument || iframeRef.current.contentWindow?.document;
+        if (!iframeDoc) return;
+
+        // Find clickable elements (buttons, links, next buttons, etc.)
+        const clickableSelectors = [
+          'button:not([disabled])',
+          'a[href]:not([disabled])',
+          '[role="button"]:not([disabled])',
+          '.next-button',
+          '.continue-button',
+          '[class*="next"]:not([disabled])',
+          '[class*="continue"]:not([disabled])',
+          '[id*="next"]:not([disabled])',
+          '[id*="continue"]:not([disabled])',
+          'input[type="submit"]:not([disabled])',
+        ];
+
+        const elements = iframeDoc.querySelectorAll(clickableSelectors.join(','));
+        
+        if (elements.length > 0) {
+          // Find the most likely "next" or "continue" button
+          const nextButton = Array.from(elements).find((el: Element) => {
+            const text = el.textContent?.toLowerCase() || '';
+            const className = el.className?.toLowerCase() || '';
+            const id = el.id?.toLowerCase() || '';
+            return text.includes('next') || text.includes('continue') || 
+                   className.includes('next') || className.includes('continue') ||
+                   id.includes('next') || id.includes('continue');
+          }) || elements[0];
+
+          // Simulate click
+          const clickEvent = new MouseEvent('click', {
+            view: iframeDoc.defaultView,
+            bubbles: true,
+            cancelable: true
+          });
+          (nextButton as HTMLElement).dispatchEvent(clickEvent);
+          console.log('Auto-clicked element:', nextButton);
+        }
+      } catch (error) {
+        console.warn('Auto-click error:', error);
+      }
+    };
+
+    // Set up auto-click interval when recording
+    useEffect(() => {
+      if (isRecording) {
+        // Start auto-clicking every 5 seconds
+        autoClickIntervalRef.current = setInterval(() => {
+          autoClickElements();
+        }, 5000);
+      } else {
+        // Clear interval when not recording
+        if (autoClickIntervalRef.current) {
+          clearInterval(autoClickIntervalRef.current);
+        }
+      }
+
+      return () => {
+        if (autoClickIntervalRef.current) {
+          clearInterval(autoClickIntervalRef.current);
+        }
+      };
+    }, [isRecording]);
+
+    // Listen for fullscreen changes
+    useEffect(() => {
+      const handleFullscreenChange = () => {
+        setIsFullscreenMode(!!document.fullscreenElement);
+      };
+
+      document.addEventListener('fullscreenchange', handleFullscreenChange);
+      return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    }, []);
+
     const handleRefresh = () => {
       loadScormContent();
     };
@@ -206,6 +315,7 @@ console.log('Service Worker registered and ready');
     const currentScoData = scormPackage?.scos?.[currentSco];
 
     return (
+      <div ref={containerRef} className={isFullscreenMode ? 'bg-black' : ''}>
       <Card className={`bg-card shadow-player ${isFullscreen ? 'fixed inset-4 z-50' : ''}`}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
@@ -225,6 +335,11 @@ console.log('Service Worker registered and ready');
           </div>
           
           <div className="flex items-center gap-2">
+            {isRecording && (
+              <Badge variant="destructive" className="animate-pulse">
+                Auto-Navigate
+              </Badge>
+            )}
             <Button variant="ghost" size="sm" onClick={handleRefresh}>
               <RotateCcw className="w-4 h-4" />
             </Button>
@@ -238,6 +353,14 @@ console.log('Service Worker registered and ready');
             </Button>
             <Button variant="ghost" size="sm" onClick={handleFullscreen}>
               {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+            </Button>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={isFullscreenMode ? exitFullscreen : enterFullscreen}
+              title={isFullscreenMode ? "Exit Fullscreen" : "Enter Fullscreen"}
+            >
+              <Maximize className="w-4 h-4" />
             </Button>
           </div>
         </div>
@@ -281,6 +404,7 @@ console.log('Service Worker registered and ready');
           )}
         </div>
       </Card>
+      </div>
     );
   }
 );
