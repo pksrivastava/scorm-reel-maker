@@ -13,6 +13,9 @@ import {
   Timer,
   Circle
 } from "lucide-react";
+import { FFmpeg } from "@ffmpeg/ffmpeg";
+import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import { useToast } from "@/hooks/use-toast";
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -25,10 +28,14 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
   const [recordingTime, setRecordingTime] = useState(0);
   const [hasRecording, setHasRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [isConverting, setIsConverting] = useState(false);
+  const [conversionProgress, setConversionProgress] = useState(0);
   const recordingIntervalRef = useRef<NodeJS.Timeout>();
   const recordedChunks = useRef<Blob[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number>();
+  const ffmpegRef = useRef<FFmpeg | null>(null);
+  const { toast } = useToast();
 
   const startRecording = async () => {
     try {
@@ -133,17 +140,113 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
     onToggleRecording();
   };
 
-  const downloadRecording = () => {
-    if (recordedChunks.current.length > 0) {
-      const blob = new Blob(recordedChunks.current, { type: 'video/webm' });
-      const url = URL.createObjectURL(blob);
+  const loadFFmpeg = async () => {
+    if (ffmpegRef.current) return ffmpegRef.current;
+    
+    const ffmpeg = new FFmpeg();
+    ffmpegRef.current = ffmpeg;
+    
+    try {
+      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+      
+      ffmpeg.on('progress', ({ progress }) => {
+        setConversionProgress(Math.round(progress * 100));
+      });
+      
+      return ffmpeg;
+    } catch (error) {
+      console.error('Failed to load FFmpeg:', error);
+      toast({
+        title: "Conversion Error",
+        description: "Failed to load video converter. Downloading as WebM instead.",
+        variant: "destructive",
+      });
+      return null;
+    }
+  };
+
+  const downloadRecording = async () => {
+    if (recordedChunks.current.length === 0) return;
+    
+    try {
+      setIsConverting(true);
+      setConversionProgress(0);
+      
+      const webmBlob = new Blob(recordedChunks.current, { type: 'video/webm' });
+      
+      toast({
+        title: "Converting to MP4",
+        description: "Please wait while we convert your recording...",
+      });
+      
+      const ffmpeg = await loadFFmpeg();
+      
+      if (!ffmpeg) {
+        // Fallback to WebM if FFmpeg fails
+        const url = URL.createObjectURL(webmBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `scorm-recording-${new Date().toISOString().split('T')[0]}.webm`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        setIsConverting(false);
+        return;
+      }
+      
+      // Write input file to FFmpeg file system
+      await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
+      
+      // Convert to MP4 with good quality settings
+      await ffmpeg.exec([
+        '-i', 'input.webm',
+        '-c:v', 'libx264',
+        '-preset', 'medium',
+        '-crf', '23',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-movflags', '+faststart',
+        'output.mp4'
+      ]);
+      
+      // Read the output file
+      const data = await ffmpeg.readFile('output.mp4');
+      const mp4Blob = new Blob([data], { type: 'video/mp4' });
+      
+      // Download the MP4
+      const url = URL.createObjectURL(mp4Blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `scorm-recording-${new Date().toISOString().split('T')[0]}.webm`;
+      a.download = `scorm-recording-${new Date().toISOString().split('T')[0]}.mp4`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      
+      // Cleanup FFmpeg files
+      await ffmpeg.deleteFile('input.webm');
+      await ffmpeg.deleteFile('output.mp4');
+      
+      toast({
+        title: "Success",
+        description: "Recording converted to MP4 and downloaded successfully!",
+      });
+      
+    } catch (error) {
+      console.error('Error converting recording:', error);
+      toast({
+        title: "Conversion Failed",
+        description: "Failed to convert to MP4. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsConverting(false);
+      setConversionProgress(0);
     }
   };
 
@@ -208,9 +311,10 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
             <Button 
               onClick={downloadRecording}
               variant="outline"
+              disabled={isConverting}
             >
               <Download className="w-4 h-4 mr-2" />
-              Download
+              {isConverting ? 'Converting...' : 'Download MP4'}
             </Button>
           )}
 
@@ -234,6 +338,17 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
               style={{ width: '100%' }}
             />
           </div>
+        </div>
+      )}
+
+      {/* Conversion Progress */}
+      {isConverting && (
+        <div className="mt-3 space-y-2">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Converting to MP4...</span>
+            <span>{conversionProgress}%</span>
+          </div>
+          <Progress value={conversionProgress} className="h-2" />
         </div>
       )}
     </Card>
