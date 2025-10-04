@@ -3,6 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { Slider } from "@/components/ui/slider";
 import { 
   Play, 
   Pause, 
@@ -11,7 +12,8 @@ import {
   Download,
   Settings,
   Timer,
-  Circle
+  Circle,
+  Scissors
 } from "lucide-react";
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
@@ -30,11 +32,16 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [isConverting, setIsConverting] = useState(false);
   const [conversionProgress, setConversionProgress] = useState(0);
+  const [showTrimControls, setShowTrimControls] = useState(false);
+  const [trimStart, setTrimStart] = useState(0);
+  const [trimEnd, setTrimEnd] = useState(0);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
   const recordingIntervalRef = useRef<NodeJS.Timeout>();
   const recordedChunks = useRef<Blob[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number>();
   const ffmpegRef = useRef<FFmpeg | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const { toast } = useToast();
 
   const startRecording = async () => {
@@ -101,6 +108,13 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
           cancelAnimationFrame(animationFrameRef.current);
         }
         stream.getTracks().forEach(track => track.stop());
+        
+        // Create preview URL for trimming
+        const webmBlob = new Blob(recordedChunks.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(webmBlob);
+        setVideoPreviewUrl(url);
+        setTrimEnd(recordingTime);
+        setShowTrimControls(true);
       };
 
       recorder.start(1000);
@@ -175,12 +189,13 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
     try {
       setIsConverting(true);
       setConversionProgress(0);
+      setShowTrimControls(false);
       
       const webmBlob = new Blob(recordedChunks.current, { type: 'video/webm' });
       
       toast({
         title: "Converting to MP4",
-        description: "Please wait while we convert your recording...",
+        description: "Please wait while we convert and trim your recording...",
       });
       
       const ffmpeg = await loadFFmpeg();
@@ -202,9 +217,19 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
       // Write input file to FFmpeg file system
       await ffmpeg.writeFile('input.webm', await fetchFile(webmBlob));
       
-      // Convert to MP4 with good quality settings
-      await ffmpeg.exec([
-        '-i', 'input.webm',
+      // Build FFmpeg command with trimming
+      const ffmpegArgs = ['-i', 'input.webm'];
+      
+      // Add trim parameters if trim values are set
+      if (trimStart > 0 || trimEnd < recordingTime) {
+        ffmpegArgs.push('-ss', trimStart.toString());
+        if (trimEnd > trimStart) {
+          ffmpegArgs.push('-to', trimEnd.toString());
+        }
+      }
+      
+      // Add encoding parameters
+      ffmpegArgs.push(
         '-c:v', 'libx264',
         '-preset', 'medium',
         '-crf', '23',
@@ -212,7 +237,10 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
         '-b:a', '128k',
         '-movflags', '+faststart',
         'output.mp4'
-      ]);
+      );
+      
+      // Convert to MP4 with trimming
+      await ffmpeg.exec(ffmpegArgs);
       
       // Read the output file
       const data = await ffmpeg.readFile('output.mp4');
@@ -231,6 +259,12 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
       // Cleanup FFmpeg files
       await ffmpeg.deleteFile('input.webm');
       await ffmpeg.deleteFile('output.mp4');
+      
+      // Cleanup preview URL
+      if (videoPreviewUrl) {
+        URL.revokeObjectURL(videoPreviewUrl);
+        setVideoPreviewUrl(null);
+      }
       
       toast({
         title: "Success",
@@ -349,6 +383,97 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
             <span>{conversionProgress}%</span>
           </div>
           <Progress value={conversionProgress} className="h-2" />
+        </div>
+      )}
+
+      {/* Video Trimming Controls */}
+      {showTrimControls && videoPreviewUrl && (
+        <div className="mt-4 space-y-4 border-t border-border pt-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Scissors className="w-4 h-4 text-primary" />
+              <span className="font-medium text-sm">Trim Video</span>
+            </div>
+            <Button 
+              variant="ghost" 
+              size="sm"
+              onClick={() => {
+                setShowTrimControls(false);
+                setTrimStart(0);
+                setTrimEnd(recordingTime);
+              }}
+            >
+              Skip
+            </Button>
+          </div>
+
+          {/* Video Preview */}
+          <div className="bg-black rounded-lg overflow-hidden">
+            <video
+              ref={videoRef}
+              src={videoPreviewUrl}
+              controls
+              className="w-full max-h-48"
+              onLoadedMetadata={(e) => {
+                const duration = (e.target as HTMLVideoElement).duration;
+                if (duration && !trimEnd) {
+                  setTrimEnd(duration);
+                }
+              }}
+            />
+          </div>
+
+          {/* Trim Range Sliders */}
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">Start Time</span>
+                <span className="font-mono">{formatTime(trimStart)}</span>
+              </div>
+              <Slider
+                value={[trimStart]}
+                onValueChange={([value]) => setTrimStart(Math.min(value, trimEnd - 1))}
+                max={recordingTime}
+                step={0.1}
+                className="w-full"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">End Time</span>
+                <span className="font-mono">{formatTime(trimEnd)}</span>
+              </div>
+              <Slider
+                value={[trimEnd]}
+                onValueChange={([value]) => setTrimEnd(Math.max(value, trimStart + 1))}
+                max={recordingTime}
+                step={0.1}
+                className="w-full"
+              />
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t border-border">
+              <span>Trimmed Duration:</span>
+              <span className="font-mono">{formatTime(trimEnd - trimStart)}</span>
+            </div>
+          </div>
+
+          {/* Preview Trim Button */}
+          <Button
+            onClick={() => {
+              if (videoRef.current) {
+                videoRef.current.currentTime = trimStart;
+                videoRef.current.play();
+              }
+            }}
+            variant="outline"
+            size="sm"
+            className="w-full"
+          >
+            <Play className="w-4 h-4 mr-2" />
+            Preview from Start Time
+          </Button>
         </div>
       )}
     </Card>
