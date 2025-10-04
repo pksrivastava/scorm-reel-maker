@@ -30,6 +30,8 @@ const iframeRef = useRef<HTMLIFrameElement>(null);
 const swRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
 const containerRef = useRef<HTMLDivElement>(null);
 const autoClickIntervalRef = useRef<NodeJS.Timeout>();
+const mutationObserverRef = useRef<MutationObserver | null>(null);
+const lastActionRef = useRef<{ sig: string; ts: number } | null>(null);
 const [swReady, setSwReady] = useState(false);
 const [isFullscreenMode, setIsFullscreenMode] = useState(false);
 
@@ -224,153 +226,155 @@ console.log('Service Worker registered and ready');
       }
     };
 
-    // Enhanced auto-click functionality for recording
+    // Enhanced auto-navigation utilities
+    const navigationKeywords = [
+      'next','continue','forward','proceed','start','begin','play','resume','go','advance','ok','submit',
+      // Symbols
+      'arrow-right','→','►',
+      // Multilingual common terms
+      'suivant','suivante','weiter','siguiente','próximo','proximo','avançar','avancar'
+    ];
+
+    const collectDocuments = (doc: Document): Document[] => {
+      const docs: Document[] = [doc];
+      const iframes = Array.from(doc.querySelectorAll('iframe')) as HTMLIFrameElement[];
+      for (const f of iframes) {
+        try {
+          const child = f.contentDocument || f.contentWindow?.document;
+          if (child) docs.push(...collectDocuments(child));
+        } catch (_) {
+          // cross-origin iframe, ignore
+        }
+      }
+      return docs;
+    };
+
+    const isElementVisible = (el: Element, doc: Document): boolean => {
+      const htmlEl = el as HTMLElement;
+      const rect = htmlEl.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      const style = doc.defaultView?.getComputedStyle(htmlEl);
+      if (!style) return false;
+      const hidden = style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') < 0.1;
+      if (hidden) return false;
+      return true;
+    };
+
+    const collectCandidates = (doc: Document): HTMLElement[] => {
+      const clickableSelectors = [
+        'button:not([disabled])',
+        'a[href]:not([disabled])',
+        'input[type="button"]:not([disabled])',
+        'input[type="submit"]:not([disabled])',
+        '[role="button"]:not([disabled])',
+        // Framework-specific
+        '.slide-button', '.navigation-button', '[data-acc-text*="next"]', '[data-acc-text*="continue"]',
+        '.playbar', '.cpPlaybarButton', '.navigate-next', '.ispring-next',
+        // Generic patterns
+        '[class*="next"]', '[class*="continue"]', '[class*="forward"]', '[class*="proceed"]', '[class*="navigation"]', '[class*="arrow"]',
+        '[id*="next"]', '[id*="continue"]', '[id*="forward"]',
+        '[aria-label*="next"]', '[aria-label*="continue"]', '[title*="next"]', '[title*="continue"]',
+        // Divs/spans acting as buttons
+        'div[onclick]', 'span[onclick]', 'div[role="button"]', 'span[role="button"]'
+      ];
+      const nodes = Array.from(doc.querySelectorAll(clickableSelectors.join(','))) as HTMLElement[];
+      return nodes.filter(n => isElementVisible(n, doc));
+    };
+
+    const scoreElement = (el: HTMLElement, doc: Document): number => {
+      let score = 0;
+      const text = (el.textContent || '').toLowerCase().trim();
+      const className = (el.className || '').toLowerCase();
+      const id = (el.id || '').toLowerCase();
+      const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+      const title = (el.getAttribute('title') || '').toLowerCase();
+      const dataText = (el.getAttribute('data-acc-text') || '').toLowerCase();
+      const combined = `${text} ${className} ${id} ${ariaLabel} ${title} ${dataText}`;
+      navigationKeywords.forEach(k => { if (combined.includes(k)) score += 12; });
+      if (text === 'next' || text === 'continue' || text === 'start' || text === 'begin') score += 18;
+      if (el.tagName === 'BUTTON' || el.tagName === 'A') score += 6;
+      if (className.includes('nav')) score += 5;
+      if (className.includes('btn')) score += 3;
+      const rect = el.getBoundingClientRect();
+      const vw = doc.defaultView?.innerWidth || 0;
+      if (rect.right > vw * 0.7) score += 4;
+      if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || className.includes('disabled')) score -= 20;
+      return score;
+    };
+
+    const findSequentialMenuTarget = (doc: Document): HTMLElement | null => {
+      // Find an active/current menu item and click the next sibling
+      const activeSel = [
+        '.toc .active', '.toc .current', '.menu .active', '.menu .current',
+        '[aria-current="true"]', '[aria-selected="true"]', '.outline-item.active', '.outline-item.current'
+      ].join(',');
+      const active = doc.querySelector(activeSel) as HTMLElement | null;
+      if (active && active.parentElement) {
+        const nextLi = active.parentElement.nextElementSibling as HTMLElement | null;
+        const anchor = nextLi?.querySelector('a,button,[role="button"]') as HTMLElement | null;
+        if (anchor && isElementVisible(anchor, doc)) return anchor;
+      }
+      // Otherwise try first clickable item in typical menus
+      const firstMenuItem = doc.querySelector('.toc a, .menu a, .outline a, nav a, [role="treeitem"] a') as HTMLElement | null;
+      return firstMenuItem && isElementVisible(firstMenuItem, doc) ? firstMenuItem : null;
+    };
+
+    const simulateKeySequence = (doc: Document) => {
+      const keys = ['ArrowRight', 'Enter', ' '];
+      keys.forEach(key => {
+        const down = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+        const up = new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true });
+        doc.dispatchEvent(down);
+        doc.dispatchEvent(up);
+      });
+    };
+
     const autoClickElements = () => {
       if (!iframeRef.current || !isRecording) return;
-
       try {
-        const iframeDoc = iframeRef.current.contentDocument || iframeRef.current.contentWindow?.document;
-        if (!iframeDoc) return;
+        const rootDoc = iframeRef.current.contentDocument || iframeRef.current.contentWindow?.document;
+        if (!rootDoc) return;
 
-        // Check if element is visible and clickable
-        const isElementVisible = (el: Element): boolean => {
-          const htmlEl = el as HTMLElement;
-          if (!htmlEl.offsetParent && htmlEl.style.display !== 'contents') return false;
-          
-          const rect = htmlEl.getBoundingClientRect();
-          if (rect.width === 0 || rect.height === 0) return false;
-          
-          const style = iframeDoc.defaultView?.getComputedStyle(htmlEl);
-          if (!style) return false;
-          
-          return style.display !== 'none' && 
-                 style.visibility !== 'hidden' && 
-                 style.opacity !== '0' &&
-                 parseFloat(style.opacity) > 0.1;
-        };
+        const docs = collectDocuments(rootDoc);
 
-        // Comprehensive list of navigation patterns
-        const navigationKeywords = [
-          'next', 'continue', 'forward', 'proceed', 'suivant', 'suivante',
-          'weiter', 'siguiente', 'próximo', 'avançar', 'submit', 'start',
-          'begin', 'play', 'go', 'advance', 'onward', 'arrow-right', '→', '►'
-        ];
-
-        // Find all potentially clickable elements
-        const clickableSelectors = [
-          // Standard buttons and links
-          'button:not([disabled])',
-          'a[href]:not([disabled])',
-          'input[type="button"]:not([disabled])',
-          'input[type="submit"]:not([disabled])',
-          '[role="button"]:not([disabled])',
-          
-          // Common SCORM framework specific selectors
-          // Articulate Storyline
-          '.slide-button',
-          '.navigation-button',
-          '[data-acc-text*="next"]',
-          '[data-acc-text*="continue"]',
-          
-          // Adobe Captivate
-          '.playbar',
-          '.cpPlaybarButton',
-          
-          // iSpring
-          '.navigate-next',
-          '.ispring-next',
-          
-          // Generic patterns
-          '[class*="next"]',
-          '[class*="continue"]',
-          '[class*="forward"]',
-          '[class*="proceed"]',
-          '[class*="navigation"]',
-          '[class*="arrow"]',
-          '[id*="next"]',
-          '[id*="continue"]',
-          '[id*="forward"]',
-          '[aria-label*="next"]',
-          '[aria-label*="continue"]',
-          '[title*="next"]',
-          '[title*="continue"]',
-          
-          // Divs and spans that might be styled as buttons
-          'div[onclick]',
-          'span[onclick]',
-          'div[role="button"]',
-          'span[role="button"]'
-        ];
-
-        const allElements = iframeDoc.querySelectorAll(clickableSelectors.join(','));
-        const visibleElements = Array.from(allElements).filter(isElementVisible);
-        
-        if (visibleElements.length === 0) return;
-
-        // Score each element to find the best navigation button
-        const scoreElement = (el: Element): number => {
-          let score = 0;
-          const text = (el.textContent || '').toLowerCase().trim();
-          const className = (el.className || '').toLowerCase();
-          const id = (el.id || '').toLowerCase();
-          const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-          const title = (el.getAttribute('title') || '').toLowerCase();
-          const dataText = (el.getAttribute('data-acc-text') || '').toLowerCase();
-          
-          // Check all attributes against navigation keywords
-          const allText = `${text} ${className} ${id} ${ariaLabel} ${title} ${dataText}`;
-          
-          navigationKeywords.forEach(keyword => {
-            if (allText.includes(keyword)) {
-              score += 10;
-              // Bonus for exact word match in text
-              if (text === keyword || text.includes(` ${keyword} `) || text.startsWith(keyword) || text.endsWith(keyword)) {
-                score += 20;
-              }
-            }
-          });
-          
-          // Bonus for being a button element
-          if (el.tagName === 'BUTTON' || el.tagName === 'A') score += 5;
-          
-          // Bonus for having navigation-related classes
-          if (className.includes('nav')) score += 5;
-          if (className.includes('btn')) score += 3;
-          
-          // Check position (right side of screen gets bonus)
-          const rect = (el as HTMLElement).getBoundingClientRect();
-          const viewportWidth = iframeDoc.defaultView?.innerWidth || 0;
-          if (rect.right > viewportWidth * 0.7) score += 5;
-          
-          return score;
-        };
-
-        // Find the best candidate
-        const scored = visibleElements.map(el => ({
-          element: el,
-          score: scoreElement(el)
-        })).filter(item => item.score > 0);
-
-        if (scored.length === 0) {
-          // Fallback: try clicking the last visible button
-          const buttons = visibleElements.filter(el => 
-            el.tagName === 'BUTTON' || el.tagName === 'A' || el.getAttribute('role') === 'button'
-          );
-          if (buttons.length > 0) {
-            const target = buttons[buttons.length - 1] as HTMLElement;
-            simulateClick(target, iframeDoc);
-            console.log('Auto-clicked fallback button:', target);
+        // Gather and score candidates across all documents
+        let best: { el: HTMLElement; doc: Document; score: number } | null = null;
+        for (const d of docs) {
+          const candidates = collectCandidates(d);
+          for (const el of candidates) {
+            const s = scoreElement(el, d);
+            if (s > 0 && (!best || s > best.score)) best = { el, doc: d, score: s };
           }
+        }
+
+        const now = Date.now();
+        const clickWithGuard = (el: HTMLElement, doc: Document, reason: string) => {
+          const sig = `${doc.URL}|${el.id}|${(el.className||'').toString()}|${(el.textContent||'').trim().slice(0,30)}`;
+          if (lastActionRef.current && lastActionRef.current.sig === sig && now - lastActionRef.current.ts < 3000) {
+            return; // avoid rapid re-clicking same element
+          }
+          simulateClick(el, doc);
+          lastActionRef.current = { sig, ts: now };
+          console.log('Auto-click:', reason, el);
+        };
+
+        if (best) {
+          clickWithGuard(best.el, best.doc, `best-candidate score=${best.score}`);
           return;
         }
 
-        // Sort by score and click the best match
-        scored.sort((a, b) => b.score - a.score);
-        const bestMatch = scored[0].element as HTMLElement;
-        
-        simulateClick(bestMatch, iframeDoc);
-        console.log('Auto-clicked element with score', scored[0].score, ':', bestMatch);
+        // Try menu progression
+        for (const d of docs) {
+          const menuTarget = findSequentialMenuTarget(d);
+          if (menuTarget) {
+            clickWithGuard(menuTarget, d, 'menu-sequence');
+            return;
+          }
+        }
 
+        // Fallback: keyboard navigation on root doc
+        simulateKeySequence(rootDoc);
+        console.log('Auto-nav fallback: keyboard sequence');
       } catch (error) {
         console.warn('Auto-click error:', error);
       }
@@ -379,49 +383,19 @@ console.log('Service Worker registered and ready');
     // Helper function to simulate various types of clicks
     const simulateClick = (element: HTMLElement, doc: Document) => {
       try {
-        // Try multiple click methods for better compatibility
-        
-        // Method 1: Standard click events
-        const mouseDown = new MouseEvent('mousedown', {
-          view: doc.defaultView,
-          bubbles: true,
-          cancelable: true
-        });
-        const mouseUp = new MouseEvent('mouseup', {
-          view: doc.defaultView,
-          bubbles: true,
-          cancelable: true
-        });
-        const click = new MouseEvent('click', {
-          view: doc.defaultView,
-          bubbles: true,
-          cancelable: true
-        });
-        
+        const mouseDown = new MouseEvent('mousedown', { view: doc.defaultView, bubbles: true, cancelable: true });
+        const mouseUp = new MouseEvent('mouseup', { view: doc.defaultView, bubbles: true, cancelable: true });
+        const click = new MouseEvent('click', { view: doc.defaultView, bubbles: true, cancelable: true });
         element.dispatchEvent(mouseDown);
         element.dispatchEvent(mouseUp);
         element.dispatchEvent(click);
-        
-        // Method 2: Try direct click if available
-        if (typeof element.click === 'function') {
-          element.click();
-        }
-        
-        // Method 3: Try PointerEvent for touch-based SCORM content
+        if (typeof element.click === 'function') element.click();
         try {
-          const pointerDown = new PointerEvent('pointerdown', {
-            bubbles: true,
-            cancelable: true
-          });
-          const pointerUp = new PointerEvent('pointerup', {
-            bubbles: true,
-            cancelable: true
-          });
+          const pointerDown = new PointerEvent('pointerdown', { bubbles: true, cancelable: true });
+          const pointerUp = new PointerEvent('pointerup', { bubbles: true, cancelable: true });
           element.dispatchEvent(pointerDown);
           element.dispatchEvent(pointerUp);
-        } catch (e) {
-          // PointerEvent not supported in this context
-        }
+        } catch {}
       } catch (error) {
         console.warn('Click simulation error:', error);
       }
@@ -470,6 +444,28 @@ console.log('Service Worker registered and ready');
 
     const handleIframeLoad = () => {
       setIsLoading(false);
+
+      // Set up MutationObserver inside the SCORM iframe to react to UI changes
+      if (mutationObserverRef.current) {
+        try { mutationObserverRef.current.disconnect(); } catch {}
+        mutationObserverRef.current = null;
+      }
+      const doc = iframeRef.current?.contentDocument || iframeRef.current?.contentWindow?.document;
+      if (doc?.body) {
+        const obs = new MutationObserver(() => {
+          // Debounce bursts by scheduling on next frame
+          requestAnimationFrame(() => autoClickElements());
+        });
+        obs.observe(doc.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['class','style','disabled','aria-disabled','aria-hidden']
+        });
+        mutationObserverRef.current = obs;
+        // Kickstart an attempt shortly after load
+        setTimeout(() => autoClickElements(), 800);
+      }
     };
 
     const currentScoData = scormPackage?.scos?.[currentSco];
