@@ -229,10 +229,11 @@ console.log('Service Worker registered and ready');
     // Enhanced auto-navigation utilities
     const navigationKeywords = [
       'next','continue','forward','proceed','start','begin','play','resume','go','advance','ok','submit',
+      'launch','open','enter','start course','begin course','play course','continue course','next slide','next page',
       // Symbols
-      'arrow-right','→','►',
+      'arrow-right','→','►','›','»',
       // Multilingual common terms
-      'suivant','suivante','weiter','siguiente','próximo','proximo','avançar','avancar'
+      'suivant','suivante','weiter','siguiente','próximo','proximo','avançar','avancar','继续','次へ','開始','播放'
     ];
 
     const collectDocuments = (doc: Document): Document[] => {
@@ -303,7 +304,7 @@ console.log('Service Worker registered and ready');
     };
 
     const findSequentialMenuTarget = (doc: Document): HTMLElement | null => {
-      // Find an active/current menu item and click the next sibling
+      // 1) Try active/current -> next sibling
       const activeSel = [
         '.toc .active', '.toc .current', '.menu .active', '.menu .current',
         '[aria-current="true"]', '[aria-selected="true"]', '.outline-item.active', '.outline-item.current'
@@ -311,10 +312,20 @@ console.log('Service Worker registered and ready');
       const active = doc.querySelector(activeSel) as HTMLElement | null;
       if (active && active.parentElement) {
         const nextLi = active.parentElement.nextElementSibling as HTMLElement | null;
-        const anchor = nextLi?.querySelector('a,button,[role="button"]') as HTMLElement | null;
+        const anchor = nextLi?.querySelector('a,button,[role="button"])') as HTMLElement | null;
         if (anchor && isElementVisible(anchor, doc)) return anchor;
       }
-      // Otherwise try first clickable item in typical menus
+
+      // 2) Try first not-completed/locked item in typical menus
+      const items = Array.from(doc.querySelectorAll('.toc li, .menu li, .outline li, nav li')) as HTMLElement[];
+      for (const item of items) {
+        const cls = (item.className || '').toLowerCase();
+        if (/(completed|done|visited|passed|locked|disabled)/.test(cls)) continue;
+        const anchor = item.querySelector('a,button,[role="button"]') as HTMLElement | null;
+        if (anchor && isElementVisible(anchor, doc)) return anchor;
+      }
+
+      // 3) Fallback to first clickable item in nav areas
       const firstMenuItem = doc.querySelector('.toc a, .menu a, .outline a, nav a, [role="treeitem"] a') as HTMLElement | null;
       return firstMenuItem && isElementVisible(firstMenuItem, doc) ? firstMenuItem : null;
     };
@@ -452,17 +463,22 @@ console.log('Service Worker registered and ready');
       }
       const doc = iframeRef.current?.contentDocument || iframeRef.current?.contentWindow?.document;
       if (doc?.body) {
-        const obs = new MutationObserver(() => {
-          // Debounce bursts by scheduling on next frame
-          requestAnimationFrame(() => autoClickElements());
+        const docs = collectDocuments(doc);
+        // Observe root and nested iframes for UI changes
+        docs.forEach((d, idx) => {
+          try {
+            const obs = new MutationObserver(() => {
+              requestAnimationFrame(() => autoClickElements());
+            });
+            obs.observe(d.body, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: ['class','style','disabled','aria-disabled','aria-hidden']
+            });
+            if (idx === 0) mutationObserverRef.current = obs;
+          } catch {}
         });
-        obs.observe(doc.body, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          attributeFilter: ['class','style','disabled','aria-disabled','aria-hidden']
-        });
-        mutationObserverRef.current = obs;
         // Kickstart an attempt shortly after load
         setTimeout(() => autoClickElements(), 800);
       }

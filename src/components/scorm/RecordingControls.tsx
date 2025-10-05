@@ -42,6 +42,9 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
   const animationFrameRef = useRef<number>();
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const displayStreamRef = useRef<MediaStream | null>(null);
+  const captureVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [mp4PreviewUrl, setMp4PreviewUrl] = useState<string | null>(null);
   const { toast } = useToast();
 
   const startRecording = async () => {
@@ -51,46 +54,74 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
         return;
       }
 
-      // Create a canvas to capture the iframe content
+      // Reset previous previews
+      try {
+        if (videoPreviewUrl) {
+          URL.revokeObjectURL(videoPreviewUrl);
+          setVideoPreviewUrl(null);
+        }
+        if (mp4PreviewUrl) {
+          URL.revokeObjectURL(mp4PreviewUrl);
+          setMp4PreviewUrl(null);
+        }
+      } catch {}
+
+      // Create a canvas that will hold the cropped recording of the iframe region
       const canvas = document.createElement('canvas');
       const iframe = contentRef.current;
       const rect = iframe.getBoundingClientRect();
-      
-      canvas.width = rect.width || 1920;
-      canvas.height = rect.height || 1080;
+
+      canvas.width = Math.max(320, Math.floor(rect.width || 1920));
+      canvas.height = Math.max(240, Math.floor(rect.height || 1080));
       canvasRef.current = canvas;
-      
+
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         throw new Error('Failed to get canvas context');
       }
 
-      // Function to draw iframe content to canvas
+      // Ask for tab/screen capture and crop to the iframe area when drawing
+      const displayStream = await (navigator.mediaDevices as any).getDisplayMedia({
+        video: { frameRate: 30, preferCurrentTab: true },
+        audio: true,
+      });
+      displayStreamRef.current = displayStream;
+
+      const videoEl = document.createElement('video');
+      videoEl.srcObject = displayStream;
+      videoEl.muted = true;
+      await videoEl.play();
+      captureVideoRef.current = videoEl;
+
       const captureFrame = () => {
-        if (!contentRef.current || !ctx || !canvasRef.current) return;
-        
+        if (!contentRef.current || !ctx || !canvasRef.current || !captureVideoRef.current) return;
         try {
-          // Draw the iframe element onto the canvas
+          const v = captureVideoRef.current;
+          const nowRect = contentRef.current.getBoundingClientRect();
+          const capW = v.videoWidth || window.innerWidth;
+          const capH = v.videoHeight || window.innerHeight;
+          const scaleX = capW / window.innerWidth;
+          const scaleY = capH / window.innerHeight;
+          const sx = Math.max(0, Math.floor(nowRect.left * scaleX));
+          const sy = Math.max(0, Math.floor(nowRect.top * scaleY));
+          const sw = Math.max(1, Math.floor(nowRect.width * scaleX));
+          const sh = Math.max(1, Math.floor(nowRect.height * scaleY));
+
           ctx.fillStyle = '#000000';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
-          
-          // Note: Direct drawing of iframe content requires same-origin policy
-          // For SCORM content loaded via blob URLs, this should work
-          ctx.drawImage(iframe as any, 0, 0, canvas.width, canvas.height);
+          ctx.drawImage(v, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
         } catch (err) {
-          // If direct capture fails, fall back to capturing pointer events
-          console.warn('Direct capture unavailable, using alternative method');
+          // Ignore frame errors and continue
         }
-        
         if (mediaRecorder?.state === 'recording') {
           animationFrameRef.current = requestAnimationFrame(captureFrame);
         }
       };
 
-      // Get the stream from the canvas
-      const stream = canvas.captureStream(30); // 30 FPS
+      // The MediaRecorder will record from the canvas stream (cropped)
+      const canvasStream = canvas.captureStream(30); // 30 FPS
 
-      const recorder = new MediaRecorder(stream, {
+      const recorder = new MediaRecorder(canvasStream, {
         mimeType: 'video/webm;codecs=vp9'
       });
 
@@ -107,7 +138,16 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
         if (animationFrameRef.current) {
           cancelAnimationFrame(animationFrameRef.current);
         }
-        stream.getTracks().forEach(track => track.stop());
+        // Stop the tab/screen capture stream
+        if (displayStreamRef.current) {
+          displayStreamRef.current.getTracks().forEach(track => track.stop());
+          displayStreamRef.current = null;
+        }
+        if (captureVideoRef.current) {
+          try { captureVideoRef.current.pause(); } catch {}
+          captureVideoRef.current.srcObject = null;
+          captureVideoRef.current = null;
+        }
         
         // Create preview URL for trimming
         const webmBlob = new Blob(recordedChunks.current, { type: 'video/webm' });
@@ -170,6 +210,9 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
       ffmpeg.on('progress', ({ progress }) => {
         setConversionProgress(Math.round(progress * 100));
       });
+      ffmpeg.on('log', ({ message }) => {
+        console.log('[ffmpeg]', message);
+      });
       
       return ffmpeg;
     } catch (error) {
@@ -228,11 +271,12 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
         }
       }
       
-      // Add encoding parameters
+      // Add encoding parameters (with broad compatibility)
       ffmpegArgs.push(
         '-c:v', 'libx264',
-        '-preset', 'medium',
+        '-preset', 'veryfast',
         '-crf', '23',
+        '-pix_fmt', 'yuv420p',
         '-c:a', 'aac',
         '-b:a', '128k',
         '-movflags', '+faststart',
@@ -240,21 +284,33 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
       );
       
       // Convert to MP4 with trimming
-      await ffmpeg.exec(ffmpegArgs);
+      try {
+        await ffmpeg.exec(ffmpegArgs);
+      } catch (e) {
+        console.warn('FFmpeg failed with audio, retrying without audio...', e);
+        const fallbackArgs = ffmpegArgs.filter((a, i) => !(ffmpegArgs[i-1] === '-c:a' || ffmpegArgs[i-1] === '-b:a'))
+          .flatMap(a => a);
+        // Remove audio settings and disable audio
+        const base = ['-i','input.webm'];
+        if (trimStart > 0 || trimEnd < recordingTime) {
+          base.push('-ss', trimStart.toString());
+          if (trimEnd > trimStart) base.push('-to', trimEnd.toString());
+        }
+        await ffmpeg.exec([...base, '-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p','-an','-movflags','+faststart','output.mp4']);
+      }
       
       // Read the output file
       const data = await ffmpeg.readFile('output.mp4');
       const mp4Blob = new Blob([data], { type: 'video/mp4' });
       
-      // Download the MP4
+      // Prepare MP4 preview instead of immediate download
       const url = URL.createObjectURL(mp4Blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `scorm-recording-${new Date().toISOString().split('T')[0]}.mp4`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      setMp4PreviewUrl(url);
+      
+      toast({
+        title: 'Preview Ready',
+        description: 'Review the MP4 preview below and click Save MP4 to download.',
+      });
       
       // Cleanup FFmpeg files
       await ffmpeg.deleteFile('input.webm');
@@ -343,12 +399,23 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
           {/* Download Button */}
           {hasRecording && (
             <Button 
-              onClick={downloadRecording}
+              onClick={() => {
+                if (mp4PreviewUrl) {
+                  const a = document.createElement('a');
+                  a.href = mp4PreviewUrl;
+                  a.download = `scorm-recording-${new Date().toISOString().split('T')[0]}.mp4`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                } else {
+                  downloadRecording();
+                }
+              }}
               variant="outline"
               disabled={isConverting}
             >
               <Download className="w-4 h-4 mr-2" />
-              {isConverting ? 'Converting...' : 'Download MP4'}
+              {isConverting ? 'Converting...' : (mp4PreviewUrl ? 'Save MP4' : 'Convert to MP4')}
             </Button>
           )}
 
@@ -474,6 +541,34 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
             <Play className="w-4 h-4 mr-2" />
             Preview from Start Time
           </Button>
+        </div>
+      )}
+
+      {mp4PreviewUrl && (
+        <div className="mt-4 space-y-3 border-t border-border pt-4">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-sm">MP4 Preview</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (mp4PreviewUrl) {
+                  const a = document.createElement('a');
+                  a.href = mp4PreviewUrl;
+                  a.download = `scorm-recording-${new Date().toISOString().split('T')[0]}.mp4`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                }
+              }}
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Save MP4
+            </Button>
+          </div>
+          <div className="bg-black rounded-lg overflow-hidden">
+            <video src={mp4PreviewUrl} controls className="w-full max-h-48" />
+          </div>
         </div>
       )}
     </Card>
