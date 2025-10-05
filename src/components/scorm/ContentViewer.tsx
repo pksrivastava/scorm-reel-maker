@@ -9,7 +9,8 @@ import {
   ExternalLink,
   Loader2,
   AlertTriangle,
-  Maximize
+  Maximize,
+  Monitor
 } from "lucide-react";
 
 interface ContentViewerProps {
@@ -18,10 +19,11 @@ interface ContentViewerProps {
   onProgressUpdate: (progress: number) => void;
   onBack?: () => void;
   isRecording?: boolean;
+  onRequestStartRecording?: () => void;
 }
 
 const ContentViewer = forwardRef<HTMLIFrameElement, ContentViewerProps>(
-  ({ scormPackage, currentSco, onProgressUpdate, onBack, isRecording = false }, ref) => {
+  ({ scormPackage, currentSco, onProgressUpdate, onBack, isRecording = false, onRequestStartRecording }, ref) => {
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -34,7 +36,7 @@ const mutationObserverRef = useRef<MutationObserver | null>(null);
 const lastActionRef = useRef<{ sig: string; ts: number } | null>(null);
 const [swReady, setSwReady] = useState(false);
 const [isFullscreenMode, setIsFullscreenMode] = useState(false);
-
+const [showStartPrompt, setShowStartPrompt] = useState(false);
 useImperativeHandle(ref, () => iframeRef.current!);
 
     useEffect(() => {
@@ -449,6 +451,9 @@ console.log('Service Worker registered and ready');
       return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
     }, []);
 
+    useEffect(() => {
+      if (isRecording) setShowStartPrompt(false);
+    }, [isRecording]);
     const handleRefresh = () => {
       loadScormContent();
     };
@@ -481,6 +486,7 @@ console.log('Service Worker registered and ready');
         });
         // Kickstart an attempt shortly after load
         setTimeout(() => autoClickElements(), 800);
+        setShowStartPrompt(true);
       }
     };
 
@@ -559,6 +565,26 @@ console.log('Service Worker registered and ready');
                 <Button variant="outline" onClick={handleRefresh}>
                   <RotateCcw className="w-4 h-4 mr-2" />
                   Try Again
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Recording Permission Prompt Overlay */}
+          {showStartPrompt && !isRecording && contentUrl && !isLoading && !error && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+              <div className="text-center space-y-4 p-6 rounded-lg bg-card shadow-card">
+                <h4 className="font-semibold text-card-foreground">Start Auto Recording</h4>
+                <p className="text-sm text-muted-foreground">To capture only the SCORM player area, click the button below and allow screen recording in your browser.</p>
+                <Button
+                  variant="gradient"
+                  onClick={() => {
+                    onRequestStartRecording?.();
+                    setShowStartPrompt(false);
+                  }}
+                >
+                  <Monitor className="w-4 h-4 mr-2" />
+                  Start Auto Recording
                 </Button>
               </div>
             </div>
