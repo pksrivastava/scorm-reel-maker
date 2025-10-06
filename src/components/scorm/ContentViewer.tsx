@@ -486,7 +486,8 @@ console.log('Service Worker registered and ready');
         });
         // Kickstart an attempt shortly after load
         setTimeout(() => autoClickElements(), 800);
-        setShowStartPrompt(true);
+        setShowStartPrompt(false);
+        onRequestStartRecording?.();
       }
     };
 

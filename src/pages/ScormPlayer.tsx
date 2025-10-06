@@ -50,16 +50,10 @@ const ScormPlayer = () => {
     }
   };
 
-  // Auto-start recording when content is loaded
+  // Recording auto-start is triggered by ContentViewer when iframe loads to avoid permission prompts
   useEffect(() => {
-    if (scormPackage && !autoRecordTriggered && recordingControlsRef.current) {
-      // Wait a bit for content to fully load
-      const timer = setTimeout(() => {
-        recordingControlsRef.current?.startRecording();
-        setAutoRecordTriggered(true);
-      }, 2000);
-      
-      return () => clearTimeout(timer);
+    if (scormPackage && !autoRecordTriggered) {
+      setAutoRecordTriggered(true);
     }
   }, [scormPackage, autoRecordTriggered]);
 

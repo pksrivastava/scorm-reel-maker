@@ -18,6 +18,7 @@ import {
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
 import { useToast } from "@/hooks/use-toast";
+import html2canvas from "html2canvas";
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -44,6 +45,7 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const displayStreamRef = useRef<MediaStream | null>(null);
   const captureVideoRef = useRef<HTMLVideoElement | null>(null);
+  const snapshotTimerRef = useRef<number | null>(null);
   const [mp4PreviewUrl, setMp4PreviewUrl] = useState<string | null>(null);
   const { toast } = useToast();
 
@@ -66,88 +68,32 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
         }
       } catch {}
 
-      // Request tab capture (audio + video)
-      const displayStream = await (navigator.mediaDevices as any).getDisplayMedia({
-        video: { frameRate: 30, preferCurrentTab: true },
-        audio: true,
-      });
-      displayStreamRef.current = displayStream;
-
-      // Try Region Capture to crop directly to the iframe element (if supported)
+      // Create an offscreen canvas that mirrors ONLY the SCORM iframe area (no permission prompts)
       const iframe = contentRef.current;
-      const track = displayStream.getVideoTracks()[0];
-      let regionCropped = false;
-      if (iframe && (document as any).cropTargetFromElement && (track as any)?.cropTo) {
-        try {
-          const target = await (document as any).cropTargetFromElement(iframe);
-          await (track as any).cropTo(target);
-          regionCropped = true;
-        } catch (e) {
-          console.warn('Region Capture crop failed, falling back to canvas cropping', e);
-        }
-      }
+      const rect = iframe.getBoundingClientRect();
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(320, Math.floor(rect.width || 1920));
+      canvas.height = Math.max(240, Math.floor(rect.height || 1080));
+      canvasRef.current = canvas;
 
-      let recorderStream: MediaStream;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Failed to get canvas context');
 
-      if (regionCropped) {
-        // Directly record the cropped tab stream (no canvas needed)
-        recorderStream = displayStream;
-      } else {
-        // Fallback: create a canvas that will hold the cropped recording of the iframe region
-        const canvas = document.createElement('canvas');
-        const rect = iframe.getBoundingClientRect();
-        canvas.width = Math.max(320, Math.floor(rect.width || 1920));
-        canvas.height = Math.max(240, Math.floor(rect.height || 1080));
-        canvasRef.current = canvas;
+      const targetDoc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!targetDoc) throw new Error('Cannot access SCORM document for capture. It might be cross-origin.');
 
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error('Failed to get canvas context');
+      // Create MediaRecorder from the canvas stream (video only)
+      const fps = 10;
+      const stream = canvas.captureStream(fps);
 
-        const videoEl = document.createElement('video');
-        videoEl.srcObject = displayStream;
-        videoEl.muted = true;
-        await videoEl.play();
-        captureVideoRef.current = videoEl;
-
-        const captureFrame = () => {
-          if (!contentRef.current || !ctx || !canvasRef.current || !captureVideoRef.current) return;
-          try {
-            const v = captureVideoRef.current;
-            const nowRect = contentRef.current.getBoundingClientRect();
-            const capW = v.videoWidth || window.innerWidth;
-            const capH = v.videoHeight || window.innerHeight;
-            const scaleX = capW / window.innerWidth;
-            const scaleY = capH / window.innerHeight;
-            const sx = Math.max(0, Math.floor(nowRect.left * scaleX));
-            const sy = Math.max(0, Math.floor(nowRect.top * scaleY));
-            const sw = Math.max(1, Math.floor(nowRect.width * scaleX));
-            const sh = Math.max(1, Math.floor(nowRect.height * scaleY));
-
-            ctx.fillStyle = '#000000';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(v, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-          } catch {}
-          if (mediaRecorder?.state === 'recording') {
-            animationFrameRef.current = requestAnimationFrame(captureFrame);
-          }
-        };
-
-        recorderStream = canvas.captureStream(30); // 30 FPS
-        // Start capturing frames
-        captureFrame();
-      }
-
-      // The MediaRecorder will record from the cropped stream
       let recorder: MediaRecorder;
       try {
-        recorder = new MediaRecorder(recorderStream, {
-          mimeType: 'video/webm;codecs=vp9,opus'
-        } as MediaRecorderOptions);
+        recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' } as MediaRecorderOptions);
       } catch {
         try {
-          recorder = new MediaRecorder(recorderStream, { mimeType: 'video/webm;codecs=vp8,opus' } as MediaRecorderOptions);
+          recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' } as MediaRecorderOptions);
         } catch {
-          recorder = new MediaRecorder(recorderStream);
+          recorder = new MediaRecorder(stream);
         }
       }
 
@@ -164,17 +110,11 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
         if (animationFrameRef.current) {
           cancelAnimationFrame(animationFrameRef.current);
         }
-        // Stop the tab/screen capture stream
-        if (displayStreamRef.current) {
-          displayStreamRef.current.getTracks().forEach(track => track.stop());
-          displayStreamRef.current = null;
+        if (snapshotTimerRef.current) {
+          clearTimeout(snapshotTimerRef.current);
+          snapshotTimerRef.current = null;
         }
-        if (captureVideoRef.current) {
-          try { captureVideoRef.current.pause(); } catch {}
-          captureVideoRef.current.srcObject = null;
-          captureVideoRef.current = null;
-        }
-        
+
         // Create preview URL for trimming
         const webmBlob = new Blob(recordedChunks.current, { type: 'video/webm' });
         const url = URL.createObjectURL(webmBlob);
@@ -186,7 +126,42 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
       recorder.start(1000);
       setMediaRecorder(recorder);
 
-      // Canvas capture loop is already started in fallback branch when applicable
+      // Snapshot loop using html2canvas against the iframe's DOM (same-origin)
+      const captureViewport = async () => {
+        if (!canvasRef.current || !mediaRecorder || mediaRecorder.state !== 'recording') return;
+        try {
+          const nowRect = iframe.getBoundingClientRect();
+          const w = Math.max(1, Math.floor(nowRect.width));
+          const h = Math.max(1, Math.floor(nowRect.height));
+          if (canvas.width !== w || canvas.height !== h) {
+            canvas.width = w;
+            canvas.height = h;
+          }
+
+          const view = targetDoc.defaultView;
+          const snapCanvas = await html2canvas(targetDoc.documentElement, {
+            backgroundColor: '#ffffff',
+            useCORS: true,
+            logging: false,
+            // Crop to the iframe's current viewport
+            x: (view?.scrollX || 0),
+            y: (view?.scrollY || 0),
+            width: w,
+            height: h,
+            windowWidth: w,
+            windowHeight: h,
+            scale: 1,
+          } as any);
+
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(snapCanvas, 0, 0, canvas.width, canvas.height);
+        } catch (e) {
+          // Best effort capture; ignore transient errors
+        } finally {
+          snapshotTimerRef.current = window.setTimeout(captureViewport, Math.floor(1000 / fps));
+        }
+      };
+      captureViewport();
 
       // Start timer
       setRecordingTime(0);
