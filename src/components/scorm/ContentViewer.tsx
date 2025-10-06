@@ -287,21 +287,23 @@ console.log('Service Worker registered and ready');
     const scoreElement = (el: HTMLElement, doc: Document): number => {
       let score = 0;
       const text = (el.textContent || '').toLowerCase().trim();
-      const className = (el.className || '').toLowerCase();
+      const classAttr = (typeof (el as any).className === 'string' 
+        ? (el as any).className 
+        : (el.getAttribute('class') || '')).toLowerCase();
       const id = (el.id || '').toLowerCase();
       const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
       const title = (el.getAttribute('title') || '').toLowerCase();
       const dataText = (el.getAttribute('data-acc-text') || '').toLowerCase();
-      const combined = `${text} ${className} ${id} ${ariaLabel} ${title} ${dataText}`;
+      const combined = `${text} ${classAttr} ${id} ${ariaLabel} ${title} ${dataText}`;
       navigationKeywords.forEach(k => { if (combined.includes(k)) score += 12; });
       if (text === 'next' || text === 'continue' || text === 'start' || text === 'begin') score += 18;
       if (el.tagName === 'BUTTON' || el.tagName === 'A') score += 6;
-      if (className.includes('nav')) score += 5;
-      if (className.includes('btn')) score += 3;
+      if (classAttr.includes('nav')) score += 5;
+      if (classAttr.includes('btn')) score += 3;
       const rect = el.getBoundingClientRect();
       const vw = doc.defaultView?.innerWidth || 0;
       if (rect.right > vw * 0.7) score += 4;
-      if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || className.includes('disabled')) score -= 20;
+      if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true' || classAttr.includes('disabled')) score -= 20;
       return score;
     };
 
@@ -314,7 +316,7 @@ console.log('Service Worker registered and ready');
       const active = doc.querySelector(activeSel) as HTMLElement | null;
       if (active && active.parentElement) {
         const nextLi = active.parentElement.nextElementSibling as HTMLElement | null;
-        const anchor = nextLi?.querySelector('a,button,[role="button"])') as HTMLElement | null;
+        const anchor = nextLi?.querySelector('a,button,[role="button"]') as HTMLElement | null;
         if (anchor && isElementVisible(anchor, doc)) return anchor;
       }
 

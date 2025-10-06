@@ -1,4 +1,10 @@
 // SCORM Service Worker - Virtual File Server
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
 let scormFiles = new Map();
 let baseUrl = '';
 

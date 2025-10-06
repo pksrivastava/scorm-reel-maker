@@ -59,27 +59,44 @@ const ScormUploader = ({ onPackageLoad }: ScormUploaderProps) => {
 
         const result = parser.parse(manifestXml);
         const manifest = result.manifest || result;
-        const organizations = manifest.organizations?.organization;
+
+        // Handle multiple organizations, pick default or first
+        const orgContainer = manifest.organizations || {};
+        const orgs = orgContainer.organization;
+        let organization = orgs;
+        if (Array.isArray(orgs)) {
+          const defId = orgContainer.default;
+          organization = orgs.find((o: any) => o.identifier === defId) || orgs[0];
+        }
+
         const resources = manifest.resources?.resource || [];
 
         const packageData: any = {
-          title: organizations?.title || 'SCORM Package',
+          title: organization?.title || 'SCORM Package',
           identifier: manifest.identifier,
           version: manifest.version || '1.2',
           scos: [],
           resources: {},
         };
 
-        // Parse SCOs from organization items
-        if (organizations?.item) {
-          const items = Array.isArray(organizations.item) ? organizations.item : [organizations.item];
-          packageData.scos = items.map((item: any, index: number) => ({
-            id: item.identifier || `item_${index}`,
-            title: item.title || `Item ${index + 1}`,
-            identifierref: item.identifierref,
-            index,
-          }));
-        }
+        // Recursively flatten items into SCOs (items with identifierref)
+        const flattenItems = (item: any, list: any[] = []) => {
+          if (!item) return list;
+          const items = Array.isArray(item) ? item : [item];
+          for (const it of items) {
+            if (it.identifierref) list.push(it);
+            if (it.item) flattenItems(it.item, list);
+          }
+          return list;
+        };
+
+        const flatItems = flattenItems(organization?.item);
+        packageData.scos = flatItems.map((item: any, index: number) => ({
+          id: item.identifier || `item_${index}`,
+          title: item.title || `Item ${index + 1}`,
+          identifierref: item.identifierref,
+          index,
+        }));
 
         // Parse resources
         const resourceArray = Array.isArray(resources) ? resources : [resources];
