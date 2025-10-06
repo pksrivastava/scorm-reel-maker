@@ -25,7 +25,7 @@ interface RecordingControlsProps {
   contentRef: React.RefObject<HTMLIFrameElement>;
 }
 
-const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingControlsProps>(
+const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording: () => void; convertToMp4: () => void; saveMp4: () => void }, RecordingControlsProps>(
   ({ isRecording, onToggleRecording, contentRef }, ref) => {
   const [recordingTime, setRecordingTime] = useState(0);
   const [hasRecording, setHasRecording] = useState(false);
@@ -66,64 +66,90 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
         }
       } catch {}
 
-      // Create a canvas that will hold the cropped recording of the iframe region
-      const canvas = document.createElement('canvas');
-      const iframe = contentRef.current;
-      const rect = iframe.getBoundingClientRect();
-
-      canvas.width = Math.max(320, Math.floor(rect.width || 1920));
-      canvas.height = Math.max(240, Math.floor(rect.height || 1080));
-      canvasRef.current = canvas;
-
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        throw new Error('Failed to get canvas context');
-      }
-
-      // Ask for tab/screen capture and crop to the iframe area when drawing
+      // Request tab capture (audio + video)
       const displayStream = await (navigator.mediaDevices as any).getDisplayMedia({
         video: { frameRate: 30, preferCurrentTab: true },
         audio: true,
       });
       displayStreamRef.current = displayStream;
 
-      const videoEl = document.createElement('video');
-      videoEl.srcObject = displayStream;
-      videoEl.muted = true;
-      await videoEl.play();
-      captureVideoRef.current = videoEl;
-
-      const captureFrame = () => {
-        if (!contentRef.current || !ctx || !canvasRef.current || !captureVideoRef.current) return;
+      // Try Region Capture to crop directly to the iframe element (if supported)
+      const iframe = contentRef.current;
+      const track = displayStream.getVideoTracks()[0];
+      let regionCropped = false;
+      if (iframe && (document as any).cropTargetFromElement && (track as any)?.cropTo) {
         try {
-          const v = captureVideoRef.current;
-          const nowRect = contentRef.current.getBoundingClientRect();
-          const capW = v.videoWidth || window.innerWidth;
-          const capH = v.videoHeight || window.innerHeight;
-          const scaleX = capW / window.innerWidth;
-          const scaleY = capH / window.innerHeight;
-          const sx = Math.max(0, Math.floor(nowRect.left * scaleX));
-          const sy = Math.max(0, Math.floor(nowRect.top * scaleY));
-          const sw = Math.max(1, Math.floor(nowRect.width * scaleX));
-          const sh = Math.max(1, Math.floor(nowRect.height * scaleY));
-
-          ctx.fillStyle = '#000000';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(v, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-        } catch (err) {
-          // Ignore frame errors and continue
+          const target = await (document as any).cropTargetFromElement(iframe);
+          await (track as any).cropTo(target);
+          regionCropped = true;
+        } catch (e) {
+          console.warn('Region Capture crop failed, falling back to canvas cropping', e);
         }
-        if (mediaRecorder?.state === 'recording') {
-          animationFrameRef.current = requestAnimationFrame(captureFrame);
+      }
+
+      let recorderStream: MediaStream;
+
+      if (regionCropped) {
+        // Directly record the cropped tab stream (no canvas needed)
+        recorderStream = displayStream;
+      } else {
+        // Fallback: create a canvas that will hold the cropped recording of the iframe region
+        const canvas = document.createElement('canvas');
+        const rect = iframe.getBoundingClientRect();
+        canvas.width = Math.max(320, Math.floor(rect.width || 1920));
+        canvas.height = Math.max(240, Math.floor(rect.height || 1080));
+        canvasRef.current = canvas;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('Failed to get canvas context');
+
+        const videoEl = document.createElement('video');
+        videoEl.srcObject = displayStream;
+        videoEl.muted = true;
+        await videoEl.play();
+        captureVideoRef.current = videoEl;
+
+        const captureFrame = () => {
+          if (!contentRef.current || !ctx || !canvasRef.current || !captureVideoRef.current) return;
+          try {
+            const v = captureVideoRef.current;
+            const nowRect = contentRef.current.getBoundingClientRect();
+            const capW = v.videoWidth || window.innerWidth;
+            const capH = v.videoHeight || window.innerHeight;
+            const scaleX = capW / window.innerWidth;
+            const scaleY = capH / window.innerHeight;
+            const sx = Math.max(0, Math.floor(nowRect.left * scaleX));
+            const sy = Math.max(0, Math.floor(nowRect.top * scaleY));
+            const sw = Math.max(1, Math.floor(nowRect.width * scaleX));
+            const sh = Math.max(1, Math.floor(nowRect.height * scaleY));
+
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(v, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+          } catch {}
+          if (mediaRecorder?.state === 'recording') {
+            animationFrameRef.current = requestAnimationFrame(captureFrame);
+          }
+        };
+
+        recorderStream = canvas.captureStream(30); // 30 FPS
+        // Start capturing frames
+        captureFrame();
+      }
+
+      // The MediaRecorder will record from the cropped stream
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(recorderStream, {
+          mimeType: 'video/webm;codecs=vp9,opus'
+        } as MediaRecorderOptions);
+      } catch {
+        try {
+          recorder = new MediaRecorder(recorderStream, { mimeType: 'video/webm;codecs=vp8,opus' } as MediaRecorderOptions);
+        } catch {
+          recorder = new MediaRecorder(recorderStream);
         }
-      };
-
-      // The MediaRecorder will record from the canvas stream (cropped)
-      const canvasStream = canvas.captureStream(30); // 30 FPS
-
-      const recorder = new MediaRecorder(canvasStream, {
-        mimeType: 'video/webm;codecs=vp9'
-      });
+      }
 
       recordedChunks.current = [];
 
@@ -160,8 +186,7 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
       recorder.start(1000);
       setMediaRecorder(recorder);
 
-      // Start capturing frames
-      captureFrame();
+      // Canvas capture loop is already started in fallback branch when applicable
 
       // Start timer
       setRecordingTime(0);
@@ -324,7 +349,7 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
       
       toast({
         title: "Success",
-        description: "Recording converted to MP4 and downloaded successfully!",
+        description: "Recording converted to MP4. Preview is ready.",
       });
       
     } catch (error) {
@@ -346,9 +371,23 @@ const RecordingControls = forwardRef<{ startRecording: () => void }, RecordingCo
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // Expose startRecording method to parent
+  // Expose controls to parent
   useImperativeHandle(ref, () => ({
-    startRecording
+    startRecording,
+    stopRecording,
+    convertToMp4: () => downloadRecording(),
+    saveMp4: () => {
+      if (mp4PreviewUrl) {
+        const a = document.createElement('a');
+        a.href = mp4PreviewUrl;
+        a.download = `scorm-recording-${new Date().toISOString().split('T')[0]}.mp4`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else {
+        downloadRecording();
+      }
+    }
   }));
 
   return (

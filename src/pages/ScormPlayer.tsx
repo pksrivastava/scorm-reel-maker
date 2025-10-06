@@ -29,7 +29,7 @@ const ScormPlayer = () => {
   const [autoRecordTriggered, setAutoRecordTriggered] = useState(false);
   
   const contentRef = useRef<HTMLIFrameElement>(null);
-  const recordingControlsRef = useRef<{ startRecording: () => void } | null>(null);
+  const recordingControlsRef = useRef<{ startRecording: () => void; stopRecording: () => void; convertToMp4: () => void; saveMp4: () => void } | null>(null);
 
   const handlePackageLoad = (packageData: any) => {
     setScormPackage(packageData);
@@ -97,7 +97,7 @@ const ScormPlayer = () => {
                 <Settings className="w-4 h-4 mr-2" />
                 Settings
               </Button>
-              <Button variant="gradient" size="sm">
+              <Button variant="gradient" size="sm" onClick={() => recordingControlsRef.current?.saveMp4?.()}>
                 <Download className="w-4 h-4 mr-2" />
                 Export MP4
               </Button>
