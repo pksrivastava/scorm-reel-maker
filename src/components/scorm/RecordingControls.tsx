@@ -128,8 +128,8 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
 
       // Snapshot loop using html2canvas against the iframe's DOM (same-origin)
       const captureViewport = async () => {
-        if (!canvasRef.current || !mediaRecorder || mediaRecorder.state !== 'recording') return;
         try {
+          // Always schedule next run; stopping is handled by onstop clearing snapshotTimerRef
           const nowRect = iframe.getBoundingClientRect();
           const w = Math.max(1, Math.floor(nowRect.width));
           const h = Math.max(1, Math.floor(nowRect.height));
@@ -143,7 +143,6 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
             backgroundColor: '#ffffff',
             useCORS: true,
             logging: false,
-            // Crop to the iframe's current viewport
             x: (view?.scrollX || 0),
             y: (view?.scrollY || 0),
             width: w,
@@ -158,7 +157,9 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
         } catch (e) {
           // Best effort capture; ignore transient errors
         } finally {
-          snapshotTimerRef.current = window.setTimeout(captureViewport, Math.floor(1000 / fps));
+          if (recorder.state === 'recording') {
+            snapshotTimerRef.current = window.setTimeout(captureViewport, Math.floor(1000 / fps));
+          }
         }
       };
       captureViewport();
@@ -227,7 +228,14 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
   };
 
   const downloadRecording = async () => {
-    if (recordedChunks.current.length === 0) return;
+    if (recordedChunks.current.length === 0) {
+      toast({
+        title: 'No recording found',
+        description: 'Start recording the SCORM player first, then try exporting.',
+        variant: 'destructive',
+      });
+      return;
+    }
     
     try {
       setIsConverting(true);
@@ -301,7 +309,11 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
       
       // Read the output file
       const data = await ffmpeg.readFile('output.mp4');
-      const mp4Blob = new Blob([data], { type: 'video/mp4' });
+      const uint8 = data instanceof Uint8Array ? data : new Uint8Array(data as any);
+      const ab = new ArrayBuffer(uint8.byteLength);
+      const copy = new Uint8Array(ab);
+      copy.set(uint8);
+      const mp4Blob = new Blob([ab], { type: 'video/mp4' });
       
       // Prepare MP4 preview instead of immediate download
       const url = URL.createObjectURL(mp4Blob);
