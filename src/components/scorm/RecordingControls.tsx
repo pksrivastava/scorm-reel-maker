@@ -199,13 +199,12 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
     if (ffmpegRef.current) return ffmpegRef.current;
     
     const ffmpeg = new FFmpeg();
-    ffmpegRef.current = ffmpeg;
     
     try {
       const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
       await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js',
+        wasmURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm',
       });
       
       ffmpeg.on('progress', ({ progress }) => {
@@ -215,6 +214,7 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
         console.log('[ffmpeg]', message);
       });
       
+      ffmpegRef.current = ffmpeg;
       return ffmpeg;
     } catch (error) {
       console.error('Failed to load FFmpeg:', error);
@@ -223,6 +223,7 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
         description: "Failed to load video converter. Downloading as WebM instead.",
         variant: "destructive",
       });
+      ffmpegRef.current = null;
       return null;
     }
   };

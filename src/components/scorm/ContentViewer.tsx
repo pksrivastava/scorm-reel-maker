@@ -419,15 +419,15 @@ console.log('Service Worker registered and ready');
     // Set up auto-click interval when recording
     useEffect(() => {
       if (isRecording) {
-        // Start auto-clicking every 7 seconds (allows more time for content to load)
+        // Start auto-clicking more frequently to handle content that advances quickly
         autoClickIntervalRef.current = setInterval(() => {
           autoClickElements();
-        }, 7000);
+        }, 3000);
         
-        // Also try an immediate click after 2 seconds for initial content
+        // Also try an immediate click after 1 second for initial content
         const initialTimeout = setTimeout(() => {
           autoClickElements();
-        }, 2000);
+        }, 1000);
         
         return () => {
           if (autoClickIntervalRef.current) {
