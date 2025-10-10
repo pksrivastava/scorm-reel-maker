@@ -139,10 +139,12 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
           }
 
           const view = targetDoc.defaultView;
-          const snapCanvas = await html2canvas(targetDoc.documentElement, {
+          // 1) Capture root document viewport
+          const rootSnap = await html2canvas(targetDoc.documentElement, {
             backgroundColor: '#ffffff',
             useCORS: true,
             logging: false,
+            foreignObjectRendering: true,
             x: (view?.scrollX || 0),
             y: (view?.scrollY || 0),
             width: w,
@@ -153,7 +155,41 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
           } as any);
 
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(snapCanvas, 0, 0, canvas.width, canvas.height);
+          ctx.drawImage(rootSnap, 0, 0, canvas.width, canvas.height);
+
+          // 2) Overlay same-origin nested iframes (common in SCORM players)
+          const iframes = Array.from(targetDoc.querySelectorAll('iframe')) as HTMLIFrameElement[];
+          for (const f of iframes) {
+            try {
+              const childDoc = f.contentDocument || f.contentWindow?.document;
+              if (!childDoc) continue; // skip cross-origin or inaccessible
+
+              const r = f.getBoundingClientRect();
+              const fx = Math.max(0, Math.floor(r.left));
+              const fy = Math.max(0, Math.floor(r.top));
+              const fw = Math.max(1, Math.floor(r.width));
+              const fh = Math.max(1, Math.floor(r.height));
+
+              const childView = childDoc.defaultView;
+              const childSnap = await html2canvas(childDoc.documentElement, {
+                backgroundColor: '#ffffff',
+                useCORS: true,
+                logging: false,
+                foreignObjectRendering: true,
+                x: (childView?.scrollX || 0),
+                y: (childView?.scrollY || 0),
+                width: fw,
+                height: fh,
+                windowWidth: fw,
+                windowHeight: fh,
+                scale: 1,
+              } as any);
+
+              ctx.drawImage(childSnap, fx, fy, fw, fh);
+            } catch (e) {
+              // ignore iframe overlay failures; keep root snapshot
+            }
+          }
         } catch (e) {
           // Best effort capture; ignore transient errors
         } finally {
