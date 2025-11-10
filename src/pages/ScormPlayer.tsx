@@ -57,6 +57,26 @@ const ScormPlayer = () => {
     }
   }, [scormPackage, autoRecordTriggered]);
 
+  // Auto-advance to next SCO when current one signals completion
+  useEffect(() => {
+    if (!scormPackage?.scos?.length) return;
+    if (progress < 100) return;
+
+    const isLast = currentSco >= scormPackage.scos.length - 1;
+    if (!isLast) {
+      // Move to next SCO and reset progress
+      setCurrentSco((i) => Math.min(i + 1, scormPackage.scos.length - 1));
+      setProgress(0);
+    } else {
+      // Finished all SCOs
+      setCompletionStatus('completed');
+      if (isRecording) {
+        // Best-effort stop recording if active
+        recordingControlsRef.current?.stopRecording?.();
+      }
+    }
+  }, [progress, currentSco, isRecording, scormPackage]);
+
   return (
     <div className="min-h-screen bg-gradient-bg">
       <div className="container mx-auto p-6">

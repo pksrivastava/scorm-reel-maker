@@ -238,6 +238,25 @@ console.log('Service Worker registered and ready');
       'suivant','suivante','weiter','siguiente','próximo','proximo','avançar','avancar','继续','次へ','開始','播放'
     ];
 
+    // Try to proactively start any media elements (videos/audios) that may gate progression
+    const ensureMediaPlayback = (docs: Document[]) => {
+      for (const d of docs) {
+        try {
+          const media = Array.from(d.querySelectorAll<HTMLMediaElement>('video, audio'));
+          for (const el of media) {
+            try {
+              el.muted = false;
+              el.volume = 1.0;
+              const playPromise = el.play();
+              if (playPromise && typeof (playPromise as any).catch === 'function') {
+                (playPromise as Promise<void>).catch(() => {});
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+    };
+
     const collectDocuments = (doc: Document): Document[] => {
       const docs: Document[] = [doc];
       const iframes = Array.from(doc.querySelectorAll('iframe')) as HTMLIFrameElement[];
@@ -352,6 +371,8 @@ console.log('Service Worker registered and ready');
 
         const docs = collectDocuments(rootDoc);
 
+        // Proactively try to start media that might be pausing progression
+        ensureMediaPlayback(docs);
         // Gather and score candidates across all documents
         let best: { el: HTMLElement; doc: Document; score: number } | null = null;
         for (const d of docs) {
