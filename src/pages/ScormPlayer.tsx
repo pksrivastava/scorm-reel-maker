@@ -27,6 +27,7 @@ const ScormPlayer = () => {
   const [progress, setProgress] = useState(0);
   const [completionStatus, setCompletionStatus] = useState<'incomplete' | 'completed' | 'passed' | 'failed'>('incomplete');
   const [autoRecordTriggered, setAutoRecordTriggered] = useState(false);
+  const [completedScos, setCompletedScos] = useState<Set<number>>(new Set());
   
   const contentRef = useRef<HTMLIFrameElement>(null);
   const recordingControlsRef = useRef<{ startRecording: () => void; stopRecording: () => void; convertToMp4: () => void; saveMp4: () => void } | null>(null);
@@ -37,6 +38,7 @@ const ScormPlayer = () => {
     setProgress(0);
     setCompletionStatus('incomplete');
     setAutoRecordTriggered(false);
+    setCompletedScos(new Set());
   };
 
   const handleRecordingToggle = () => {
@@ -61,21 +63,26 @@ const ScormPlayer = () => {
   useEffect(() => {
     if (!scormPackage?.scos?.length) return;
     if (progress < 100) return;
+    if (completedScos.has(currentSco)) return; // Already processed this SCO
+
+    // Mark current SCO as completed
+    setCompletedScos(prev => new Set(prev).add(currentSco));
 
     const isLast = currentSco >= scormPackage.scos.length - 1;
     if (!isLast) {
-      // Move to next SCO and reset progress
-      setCurrentSco((i) => Math.min(i + 1, scormPackage.scos.length - 1));
-      setProgress(0);
+      // Small delay to prevent rapid firing
+      setTimeout(() => {
+        setCurrentSco(prev => Math.min(prev + 1, scormPackage.scos.length - 1));
+        setProgress(0);
+      }, 500);
     } else {
       // Finished all SCOs
       setCompletionStatus('completed');
       if (isRecording) {
-        // Best-effort stop recording if active
         recordingControlsRef.current?.stopRecording?.();
       }
     }
-  }, [progress, currentSco, isRecording, scormPackage]);
+  }, [progress, currentSco, isRecording, scormPackage, completedScos]);
 
   return (
     <div className="min-h-screen bg-gradient-bg">

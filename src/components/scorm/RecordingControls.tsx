@@ -622,6 +622,10 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
                   document.body.appendChild(a);
                   a.click();
                   document.body.removeChild(a);
+                  toast({
+                    title: "Downloaded",
+                    description: "MP4 file saved successfully",
+                  });
                 }
               }}
             >
@@ -630,7 +634,23 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
             </Button>
           </div>
           <div className="bg-black rounded-lg overflow-hidden">
-            <video src={mp4PreviewUrl} controls className="w-full max-h-48" />
+            <video 
+              src={mp4PreviewUrl} 
+              controls 
+              className="w-full max-h-48"
+              preload="metadata"
+              onError={(e) => {
+                console.error('MP4 preview error:', e);
+                toast({
+                  title: "Preview Error",
+                  description: "Could not load MP4 preview. Try downloading instead.",
+                  variant: "destructive",
+                });
+              }}
+              onLoadedData={() => {
+                console.log('MP4 preview loaded successfully');
+              }}
+            />
           </div>
         </div>
       )}
