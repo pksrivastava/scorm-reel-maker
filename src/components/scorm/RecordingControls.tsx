@@ -51,6 +51,10 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
 
   const startRecording = async () => {
     try {
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        console.warn('Recording already in progress');
+        return;
+      }
       if (!contentRef.current) {
         console.error('Content iframe not available');
         return;
@@ -635,10 +639,11 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
           </div>
           <div className="bg-black rounded-lg overflow-hidden">
             <video 
-              src={mp4PreviewUrl} 
+              key={mp4PreviewUrl || 'mp4-preview'}
               controls 
               className="w-full max-h-48"
               preload="metadata"
+              playsInline
               onError={(e) => {
                 console.error('MP4 preview error:', e);
                 toast({
@@ -650,7 +655,10 @@ const RecordingControls = forwardRef<{ startRecording: () => void; stopRecording
               onLoadedData={() => {
                 console.log('MP4 preview loaded successfully');
               }}
-            />
+            >
+              <source src={mp4PreviewUrl || ''} type="video/mp4" />
+              Your browser does not support MP4 playback. Please download the file instead.
+            </video>
           </div>
         </div>
       )}
