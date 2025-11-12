@@ -34,6 +34,8 @@ const containerRef = useRef<HTMLDivElement>(null);
 const autoClickIntervalRef = useRef<NodeJS.Timeout>();
 const mutationObserverRef = useRef<MutationObserver | null>(null);
 const lastActionRef = useRef<{ sig: string; ts: number } | null>(null);
+const autoClickDebounceTimerRef = useRef<number | null>(null);
+const lastDocUrlRef = useRef<string | null>(null);
 const [swReady, setSwReady] = useState(false);
 const [isFullscreenMode, setIsFullscreenMode] = useState(false);
 const [showStartPrompt, setShowStartPrompt] = useState(false);
@@ -249,12 +251,12 @@ console.log('Service Worker registered and ready');
 
     // Enhanced auto-navigation utilities
     const navigationKeywords = [
-      'next','continue','forward','proceed','start','begin','play','resume','go','advance','ok','submit',
-      'launch','open','enter','start course','begin course','play course','continue course','next slide','next page',
+      'next','continue','forward','proceed','start','begin','go','advance','ok','submit',
+      'launch','open','enter','start course','begin course','continue course','next slide','next page',
       // Symbols
-      'arrow-right','→','►','›','»',
+      'arrow-right','→','›','»',
       // Multilingual common terms
-      'suivant','suivante','weiter','siguiente','próximo','proximo','avançar','avancar','继续','次へ','開始','播放'
+      'suivant','suivante','weiter','siguiente','próximo','proximo','avançar','avancar','继续','次へ','開始'
     ];
 
     // Try to proactively start any media elements (videos/audios) that may gate progression
@@ -319,7 +321,15 @@ console.log('Service Worker registered and ready');
         'div[onclick]', 'span[onclick]', 'div[role="button"]', 'span[role="button"]'
       ];
       const nodes = Array.from(doc.querySelectorAll(clickableSelectors.join(','))) as HTMLElement[];
-      return nodes.filter(n => isElementVisible(n, doc));
+      return nodes.filter(n => {
+        if (!isElementVisible(n, doc)) return false;
+        const t = (n.textContent || '').toLowerCase();
+        const cls = (typeof (n as any).className === 'string' ? (n as any).className : (n.getAttribute('class') || '')).toLowerCase();
+        const combined = `${t} ${cls} ${(n.getAttribute('aria-label') || '').toLowerCase()}`;
+        if (/(pause|previous|prev|back|rewind|replay|restart|start over)/.test(combined)) return false;
+        if (/(^|\s)play(\s|$)/.test(t) && !/(next|continue|forward)/.test(combined)) return false;
+        return true;
+      });
     };
 
     const scoreElement = (el: HTMLElement, doc: Document): number => {
@@ -390,8 +400,17 @@ console.log('Service Worker registered and ready');
 
         const docs = collectDocuments(rootDoc);
 
+        // If any media is currently playing, avoid clicking to prevent toggling play/pause loops
+        const mediaPlaying = docs.some(d => {
+          try {
+            return Array.from(d.querySelectorAll<HTMLMediaElement>('video, audio')).some(m => !m.paused && !m.ended && m.currentTime > 0);
+          } catch { return false; }
+        });
+        if (mediaPlaying) return;
+
         // Proactively try to start media that might be pausing progression
         ensureMediaPlayback(docs);
+
         // Gather and score candidates across all documents
         let best: { el: HTMLElement; doc: Document; score: number } | null = null;
         for (const d of docs) {
@@ -403,13 +422,17 @@ console.log('Service Worker registered and ready');
         }
 
         const now = Date.now();
+        const currentUrl = rootDoc.URL;
+        const thresholdMs = lastDocUrlRef.current && lastDocUrlRef.current === currentUrl ? 15000 : 3000;
+
         const clickWithGuard = (el: HTMLElement, doc: Document, reason: string) => {
           const sig = `${doc.URL}|${el.id}|${(el.className||'').toString()}|${(el.textContent||'').trim().slice(0,30)}`;
-          if (lastActionRef.current && lastActionRef.current.sig === sig && now - lastActionRef.current.ts < 3000) {
+          if (lastActionRef.current && lastActionRef.current.sig === sig && now - lastActionRef.current.ts < thresholdMs) {
             return; // avoid rapid re-clicking same element
           }
           simulateClick(el, doc);
           lastActionRef.current = { sig, ts: now };
+          lastDocUrlRef.current = currentUrl;
           console.log('Auto-click:', reason, el);
         };
 
@@ -462,7 +485,7 @@ console.log('Service Worker registered and ready');
         // Start auto-clicking more frequently to handle content that advances quickly
         autoClickIntervalRef.current = setInterval(() => {
           autoClickElements();
-        }, 3000);
+        }, 6000);
         
         // Also try an immediate click after 1 second for initial content
         const initialTimeout = setTimeout(() => {
@@ -515,7 +538,11 @@ console.log('Service Worker registered and ready');
         docs.forEach((d, idx) => {
           try {
             const obs = new MutationObserver(() => {
-              requestAnimationFrame(() => autoClickElements());
+              if (autoClickDebounceTimerRef.current) return;
+              autoClickDebounceTimerRef.current = window.setTimeout(() => {
+                autoClickDebounceTimerRef.current = null;
+                autoClickElements();
+              }, 1200);
             });
             obs.observe(d.body, {
               childList: true,
