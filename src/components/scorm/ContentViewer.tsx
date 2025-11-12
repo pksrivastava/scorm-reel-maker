@@ -37,6 +37,21 @@ const lastActionRef = useRef<{ sig: string; ts: number } | null>(null);
 const [swReady, setSwReady] = useState(false);
 const [isFullscreenMode, setIsFullscreenMode] = useState(false);
 const [showStartPrompt, setShowStartPrompt] = useState(false);
+const scormCompletedRef = useRef(false);
+const stallTimeoutRef = useRef<number | null>(null);
+const resetStallTimer = () => {
+  if (stallTimeoutRef.current) {
+    clearTimeout(stallTimeoutRef.current);
+    stallTimeoutRef.current = null;
+  }
+  scormCompletedRef.current = false;
+  stallTimeoutRef.current = window.setTimeout(() => {
+    if (!scormCompletedRef.current) {
+      console.warn('SCORM stall fallback: auto-complete');
+      onProgressUpdate(100);
+    }
+  }, 90000); // 90s fallback
+};
 useImperativeHandle(ref, () => iframeRef.current!);
 
     useEffect(() => {
@@ -57,7 +72,11 @@ useEffect(() => {
 
 // Expose SCORM API (1.2 and 2004) on parent window so SCO can find it via parent/opener
 useEffect(() => {
-  const onComplete = () => onProgressUpdate(100);
+  const onComplete = () => { 
+    scormCompletedRef.current = true; 
+    if (stallTimeoutRef.current) { clearTimeout(stallTimeoutRef.current); stallTimeoutRef.current = null; }
+    onProgressUpdate(100);
+  };
 
   const api12 = {
     LMSInitialize: () => "true",
@@ -511,6 +530,7 @@ console.log('Service Worker registered and ready');
         setTimeout(() => autoClickElements(), 800);
         setShowStartPrompt(false);
         if (!isRecording) onRequestStartRecording?.();
+        resetStallTimer();
       }
     };
 
